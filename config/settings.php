@@ -32,7 +32,7 @@ function env_value(string $key, ?string $default = null): ?string
 }
 
 return [
-    'app_name' => env_value('APP_NAME', 'MAAT Ticket Systeem'),
+    'app_name' => env_value('APP_NAME', 'Ticket Systeem'),
     'app_url' => rtrim((string) env_value('APP_URL', 'http://127.0.0.1:8080'), '/'),
     'app_env' => env_value('APP_ENV', 'production'),
     'db' => [
@@ -44,7 +44,7 @@ return [
     ],
     'mail' => [
         'from' => env_value('MAIL_FROM', 'noreply@example.nl'),
-        'from_name' => env_value('MAIL_FROM_NAME', 'MAAT Support'),
+        'from_name' => env_value('MAIL_FROM_NAME', 'Supportdesk'),
         'smtp_host' => env_value('SMTP_HOST', ''),
         'smtp_port' => env_value('SMTP_PORT', '587'),
         'smtp_username' => env_value('SMTP_USERNAME', ''),

@@ -26,7 +26,7 @@ final class Installer
         }
         echo "Ticket Systeem installatie-wizard\n\n";
         $values = [
-            'APP_NAME' => self::ask('Applicatienaam', 'MAAT Ticket Systeem'),
+            'APP_NAME' => self::ask('Applicatienaam', 'Ticket Systeem'),
             'APP_URL' => self::ask('Publieke URL', 'http://127.0.0.1:8080'),
             'APP_ENV' => self::ask('Omgeving', 'production'),
             'DB_HOST' => self::ask('Database host', '127.0.0.1'),
@@ -35,7 +35,7 @@ final class Installer
             'DB_USERNAME' => self::ask('Database gebruiker', 'ticket_user'),
             'DB_PASSWORD' => self::ask('Database wachtwoord', ''),
             'MAIL_FROM' => self::ask('Afzender e-mail', 'noreply@example.nl'),
-            'MAIL_FROM_NAME' => self::ask('Afzender naam', 'MAAT Support'),
+            'MAIL_FROM_NAME' => self::ask('Afzender naam', 'Supportdesk'),
             'SMTP_HOST' => self::ask('SMTP host (leeg = alleen loggen)', ''),
             'SMTP_PORT' => self::ask('SMTP poort', '587'),
             'SMTP_USERNAME' => self::ask('SMTP gebruiker', ''),
@@ -221,9 +221,9 @@ final class Installer
     private static function renderForm(array $errors = []): void
     {
         $defaults = [
-            'APP_NAME' => 'MAAT Ticket Systeem', 'APP_URL' => 'http://127.0.0.1:8080', 'APP_ENV' => 'production',
+            'APP_NAME' => 'Ticket Systeem', 'APP_URL' => 'http://127.0.0.1:8080', 'APP_ENV' => 'production',
             'DB_HOST' => '127.0.0.1', 'DB_PORT' => '3306', 'DB_DATABASE' => 'ticket_systeem', 'DB_USERNAME' => 'ticket_user',
-            'MAIL_FROM' => 'noreply@example.nl', 'MAIL_FROM_NAME' => 'MAAT Support', 'SMTP_PORT' => '587', 'SMTP_ENCRYPTION' => 'tls',
+            'MAIL_FROM' => 'noreply@example.nl', 'MAIL_FROM_NAME' => 'Supportdesk', 'SMTP_PORT' => '587', 'SMTP_ENCRYPTION' => 'tls',
             'DEFAULT_ADMIN_NAME' => 'Admin', 'DEFAULT_ADMIN_EMAIL' => 'admin@example.nl', 'DATA_RETENTION_DAYS' => '365',
         ];
         $fields = '';

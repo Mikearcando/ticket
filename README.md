@@ -57,7 +57,7 @@ Vul voor het migreren eerst de database- en SMTP-instellingen in `.env` in. Zie 
 Minimale `.env`-waarden:
 
 ```dotenv
-APP_NAME="MAAT Ticket Systeem"
+APP_NAME="Ticket Systeem"
 APP_ENV=production
 APP_URL=https://helpdesk.example.nl
 

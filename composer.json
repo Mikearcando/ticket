@@ -1,5 +1,5 @@
 {
-  "name": "maat/ticket-systeem",
+  "name": "selfhosted/ticket-system",
   "description": "Zelfgehost helpdesk- en ticketsysteem MVP",
   "type": "project",
   "require": {

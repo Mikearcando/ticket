@@ -1,7 +1,7 @@
 # PRD – Ticket Systeem (Helpdesk / Support)
 **Versie:** 1.0  
 **Datum:** 2 juni 2026  
-**Auteur:** Mike A. / MAAT Training & Coaching  
+**Auteur:** Projectteam  
 **Status:** Concept  
 
 ---
