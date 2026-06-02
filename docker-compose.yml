@@ -1,0 +1,57 @@
+services:
+  app:
+    build: .
+    container_name: ticket-systeem-app
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      APP_NAME: "MAAT Ticket Systeem"
+      APP_URL: "http://127.0.0.1:8081"
+      APP_ENV: "local"
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_DATABASE: ticket_systeem
+      DB_USERNAME: ticket_user
+      DB_PASSWORD: ticket_pass
+      MAIL_FROM: noreply@example.nl
+      MAIL_FROM_NAME: "MAAT Support"
+      SMTP_HOST: ""
+      SMTP_PORT: "587"
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
+      SMTP_ENCRYPTION: tls
+      DEFAULT_ADMIN_NAME: Admin
+      DEFAULT_ADMIN_EMAIL: admin@example.nl
+      DEFAULT_ADMIN_PASSWORD: ChangeMe123!
+      DATA_RETENTION_DAYS: "365"
+    ports:
+      - "8081:80"
+    volumes:
+      - ./storage:/var/www/html/storage
+    healthcheck:
+      test: ["CMD-SHELL", "php -r \"exit(@file_get_contents('http://127.0.0.1/') === false ? 1 : 0);\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8.4
+    container_name: ticket-systeem-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ticket_systeem
+      MYSQL_USER: ticket_user
+      MYSQL_PASSWORD: ticket_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - ticket_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  ticket_mysql_data:

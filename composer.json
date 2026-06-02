@@ -1,0 +1,27 @@
+{
+  "name": "maat/ticket-systeem",
+  "description": "Zelfgehost helpdesk- en ticketsysteem MVP",
+  "type": "project",
+  "require": {
+    "php": ">=8.2",
+    "ext-pdo": "*",
+    "ext-fileinfo": "*",
+    "ext-mbstring": "*",
+    "phpmailer/phpmailer": "^6.9"
+  },
+  "autoload": {
+    "psr-4": {
+      "TicketSysteem\\": "src/"
+    }
+  },
+  "scripts": {
+    "install-wizard": "php install.php",
+    "migrate": "php migrate.php",
+    "seed": "php seed.php",
+    "retention-cleanup": "php retention_cleanup.php",
+    "sla-check": "php sla_check.php",
+    "smtp-test": "php smtp_test.php",
+    "seed-performance": "php scripts/seed-performance.php",
+    "serve": "php -S 127.0.0.1:8080 -t public"
+  }
+}

@@ -1,0 +1,7 @@
+.env
+.installed
+vendor/
+storage/attachments/
+storage/*.log
+storage/a11y/
+*.tmp

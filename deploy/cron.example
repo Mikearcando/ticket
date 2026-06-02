@@ -1,0 +1,2 @@
+*/15 * * * * cd /var/www/ticket-systeem && php sla_check.php >> storage/sla-check.log 2>&1
+15 3 * * * cd /var/www/ticket-systeem && php retention_cleanup.php >> storage/retention-cleanup.log 2>&1

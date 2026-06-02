@@ -1,0 +1,389 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #17202a;
+  --muted: #667085;
+  --line: #d9dee7;
+  --brand: #176b87;
+  --brand-strong: #0f5066;
+  --danger: #b42318;
+  --ok: #15803d;
+  --warn: #b45309;
+  --teal: #0f766e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 10;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--brand-strong);
+  border: 2px solid var(--brand-strong);
+}
+
+.skip-link:focus {
+  top: 12px;
+}
+
+:focus-visible {
+  outline: 3px solid #0f5066;
+  outline-offset: 2px;
+}
+
+nav {
+  min-height: 64px;
+  padding: 0 28px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+nav > a {
+  color: var(--text);
+  font-weight: 700;
+}
+
+nav div {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+nav form {
+  margin: 0;
+}
+
+nav button {
+  border: 0;
+  background: transparent;
+  color: var(--brand);
+  cursor: pointer;
+  font: inherit;
+}
+
+main {
+  width: min(1180px, calc(100% - 32px));
+  margin: 28px auto 56px;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+
+.hero h1,
+.panel h1,
+.panel h2 {
+  margin: 0 0 6px;
+}
+
+.hero p,
+.panel p {
+  margin-top: 0;
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 18px;
+}
+
+.danger {
+  border-color: #f2b8b5;
+  color: var(--danger);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+label {
+  display: grid;
+  gap: 7px;
+  font-weight: 700;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 11px;
+  font: inherit;
+  background: #fff;
+  color: var(--text);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--brand);
+  border-radius: 6px;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button.secondary {
+  background: #fff;
+  color: var(--brand);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.auth {
+  width: min(460px, 100%);
+  margin: 54px auto;
+}
+
+.notice {
+  padding: 12px 14px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  margin-bottom: 14px;
+}
+
+.hp {
+  position: absolute;
+  left: -9999px;
+}
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.kpis div {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.kpis b {
+  display: block;
+  font-size: 28px;
+}
+
+.kpis span,
+small {
+  color: var(--muted);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.table th,
+.table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  background: #eef4f6;
+  font-size: 13px;
+  color: #344054;
+}
+
+.table small {
+  display: block;
+}
+
+.badge,
+.priority,
+.sla {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.badge.nieuw { background: #dbeafe; color: #1d4ed8; }
+.badge.open { background: #dcfce7; color: #166534; }
+.badge.in_behandeling { background: #ffedd5; color: #9a3412; }
+.badge.wachtend_op_klant { background: #e5e7eb; color: #374151; }
+.badge.opgelost { background: #ccfbf1; color: #0f766e; }
+.badge.gesloten { background: #111827; color: #fff; }
+
+.p-laag { background: #e0f2fe; color: #075985; }
+.p-normaal { background: #e7e5e4; color: #44403c; }
+.p-hoog { background: #fef3c7; color: #92400e; }
+.p-kritiek { background: #fee2e2; color: #991b1b; }
+
+.sla.ok { background: #dcfce7; color: var(--ok); }
+.sla.warn { background: #fef3c7; color: var(--warn); }
+.sla.breach { background: #fee2e2; color: var(--danger); }
+
+.filters,
+.quick {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.filters input {
+  min-width: 260px;
+  flex: 1;
+}
+
+.quick form {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.detail b {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.event {
+  border-left: 4px solid var(--brand);
+  background: #f8fafc;
+  padding: 12px 14px;
+  border-radius: 0 6px 6px 0;
+}
+
+.event.internal {
+  border-color: var(--warn);
+  background: #fffbeb;
+}
+
+.event.audit {
+  border-color: #94a3b8;
+}
+
+.check {
+  display: flex;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  font-weight: 400;
+}
+
+.check input {
+  width: auto;
+}
+
+.stack {
+  display: grid;
+  gap: 14px;
+}
+
+fieldset {
+  min-width: 0;
+}
+
+legend {
+  font-weight: 700;
+  padding: 0 6px;
+}
+
+@media (max-width: 820px) {
+  nav,
+  .hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .form-grid,
+  .kpis,
+  .detail {
+    grid-template-columns: 1fr;
+  }
+
+  .wide {
+    grid-column: auto;
+  }
+
+  .table {
+    display: block;
+    overflow-x: auto;
+  }
+
+  .filters input,
+  .filters select,
+  .filters button {
+    width: 100%;
+  }
+}

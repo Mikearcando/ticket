@@ -1,0 +1,6 @@
+.env
+.installed
+vendor/
+storage/attachments/
+storage/*.log
+.git/
