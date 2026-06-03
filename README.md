@@ -179,9 +179,15 @@ AD_GROUP_VIEWER="CN=Ticket Viewers,OU=Groups,DC=example,DC=local"
 AD_GROUP_AGENT="CN=Ticket Agents,OU=Groups,DC=example,DC=local"
 AD_GROUP_MANAGER="CN=Ticket Managers,OU=Groups,DC=example,DC=local"
 AD_GROUP_ADMIN="CN=Ticket Admins,OU=Groups,DC=example,DC=local"
+AD_TLS_REQUIRE_CERT=demand
+AD_TLS_CACERTFILE=/etc/ssl/certs/ad-ca.pem
+AD_TLS_CACERTDIR=
+AD_NETWORK_TIMEOUT=5
 ```
 
-Test de verbinding via `/admin/config`. Lokale admin-login blijft beschikbaar als fallback.
+`AD_USE_TLS` moet `ldaps` of `starttls` zijn. Gebruik `ldaps` normaal met poort 636 en `starttls` met poort 389; de configuratie-UI weigert `starttls` op poort 636. `AD_TLS_REQUIRE_CERT` accepteert `demand`, `hard`, `allow`, `try` of `never`; gebruik in productie bij voorkeur `demand` met een vertrouwde CA en een domain controller-hostnaam die overeenkomt met het certificaat. `AD_NETWORK_TIMEOUT` ligt tussen 1 en 60 seconden.
+
+Test de verbinding via `/admin/config`. Lokale admin-login blijft beschikbaar als fallback voor lokale accounts.
 
 ## Onderhoud
 

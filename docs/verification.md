@@ -30,6 +30,26 @@ Gedekte flow:
 - SLA-check script aanroepen;
 - auditlog bereikbaar via adminnavigatie.
 
+## AD/LDAPS hardening
+
+Command:
+
+```powershell
+.\scripts\ad-hardening-smoke.ps1 -BaseUrl http://127.0.0.1:8081
+```
+
+Gedekte checks zonder echte domain controller:
+
+- `users.auth_source`, `users.external_auth_id`, `uq_users_external_auth`, `login_attempts.auth_source`, `system_audit_log` en `uq_csat_ticket` bestaan na migraties;
+- `/admin/config` toont AD/LDAPS-instellingen zonder `AD_BIND_PASSWORD` waarde;
+- `AD_PORT` moet een geldig poortnummer zijn;
+- `AD_USE_TLS` accepteert alleen `ldaps` of `starttls`;
+- `AD_PORT` moet een geldig poortnummer zijn;
+- `AD_TLS_REQUIRE_CERT` accepteert alleen expliciete LDAP-certificaatmodi;
+- `AD_NETWORK_TIMEOUT` moet numeriek en 1-60 seconden zijn;
+- AD-connectietest toont statusvelden en schrijft `ad_connection_test` naar `system_audit_log`;
+- AD-wachtwoordwijziging stopt bij lokale validatie voordat LDAP wordt aangeroepen.
+
 ## Performance
 
 Command:
@@ -107,6 +127,14 @@ Geverifieerd via smoke-test:
 - `Content-Security-Policy`;
 - CSRF op applicatieformulieren.
 - login-throttling na 5 mislukte pogingen per e-mail/IP in 15 minuten.
+
+AD/LDAPS hardening geverifieerd via smoke-test:
+
+- `AD_USE_TLS` accepteert alleen `ldaps` of `starttls`;
+- `AD_TLS_REQUIRE_CERT` accepteert alleen expliciete LDAP-certificaatmodi;
+- `AD_NETWORK_TIMEOUT` moet numeriek en 1-60 seconden zijn;
+- lokale wachtwoordwijziging/reset voor AD-accounts wordt geblokkeerd;
+- AD-connectietest toont status zonder bind-wachtwoord of andere secrets te lekken.
 
 Handmatig toegevoegd:
 

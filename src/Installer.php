@@ -123,14 +123,19 @@ final class Installer
     public static function migrate(PDO $pdo): void
     {
         $pdo->exec('CREATE TABLE IF NOT EXISTS schema_migrations (filename VARCHAR(255) PRIMARY KEY, executed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
-        foreach (glob(dirname(__DIR__) . '/migrations/*.sql') as $migration) {
+        $migrations = glob(dirname(__DIR__) . '/migrations/*.sql') ?: [];
+        sort($migrations, SORT_STRING);
+        foreach ($migrations as $migration) {
             $filename = basename($migration);
             $stmt = $pdo->prepare('SELECT COUNT(*) FROM schema_migrations WHERE filename = ?');
             $stmt->execute([$filename]);
             if ((int) $stmt->fetchColumn() > 0) {
                 continue;
             }
-            $sql = (string) file_get_contents($migration);
+            $sql = file_get_contents($migration);
+            if ($sql === false) {
+                throw new \RuntimeException("Kan migratie niet lezen: {$migration}");
+            }
             foreach (array_filter(array_map('trim', explode(';', $sql))) as $statement) {
                 $pdo->exec($statement);
             }
@@ -157,7 +162,7 @@ final class Installer
             'status_changed' => ['Status gewijzigd: {{ ticket.number }}', '<p>De status van {{ ticket.number }} is gewijzigd naar {{ ticket.status }}.</p>'],
             'sla_warning' => ['SLA-waarschuwing {{ ticket.number }}', '<p>Ticket {{ ticket.number }} nadert de SLA-deadline.</p>'],
             'sla_breach' => ['SLA overschreden {{ ticket.number }}', '<p>Ticket {{ ticket.number }} heeft de SLA overschreden.</p>'],
-            'ticket_closed' => ['Ticket gesloten {{ ticket.number }}', '<p>Ticket {{ ticket.number }} is gesloten.</p>'],
+            'ticket_closed' => ['Ticket gesloten {{ ticket.number }}', '<p>Ticket {{ ticket.number }} is gesloten.</p><p>Beoordeel onze afhandeling: <a href="{{ csat.link }}">tevredenheid invullen</a></p>'],
         ];
         foreach ($templates as $event => [$subject, $body]) {
             $stmt = $pdo->prepare('INSERT INTO email_templates (event_type, subject, body_html) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE subject=VALUES(subject), body_html=VALUES(body_html)');

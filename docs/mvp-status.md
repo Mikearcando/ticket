@@ -26,6 +26,11 @@ Deze implementatie is een werkend PHP 8.3 MVP-skelet met de belangrijkste helpde
 - eerste-reactie-SLA monitoring en rapportage.
 - login-throttling tegen brute-force pogingen.
 - geverifieerd met `load-test-ok` op 10.000 tickets / 50 gelijktijdige geauthenticeerde requests.
+- P1-basis voor bulkacties, kennisbank, tijdregistratie, CSAT, exports, webhooks, thema, IMAP-intake en AD/LDAPS.
+- IMAP-intake maakt nieuwe tickets en koppelt replies aan bestaande tickets wanneer het ticketnummer `TKT-YYYY-NNNNNN` in onderwerp of body staat.
+- gefilterde CSV/PDF-exports voor manager/admin, inclusief CSV-formulebescherming.
+- CSAT-links worden alleen naar de klant gestuurd; `mail_log` maskeert live CSAT-tokens.
+- ticketnummering herstelt automatisch wanneer seed/load-testdata de sequence achterhaald heeft.
 
 Bewuste MVP-beperkingen:
 
@@ -33,4 +38,7 @@ Bewuste MVP-beperkingen:
 - De PRD noemt Slim 4 en Twig. Omdat Composer lokaal niet beschikbaar was, is het MVP gebouwd als dependency-light PHP front controller. Dit kan later naar Slim/Twig worden gemigreerd zonder het databaseschema te vervangen.
 - De cronjob voor `php sla_check.php` moet op de server nog worden ingesteld.
 - De cronjob voor `php retention_cleanup.php` moet op de server nog worden ingesteld.
-- Bulk-acties, IMAP-intake, kennisbank, CSAT en API blijven bewust buiten P0/MVP.
+- De cronjob voor `php imap_intake.php` is optioneel en alleen nodig wanneer e-mailintake wordt gebruikt.
+- Kennisbankartikelen zijn gekoppeld aan categorieen, maar de publieke ticketflow toont nog geen automatische FAQ-suggesties per gekozen categorie.
+- AD/LDAPS heeft auth-source markering, system-audit voor AD-events en bind/search-connectietest met latency. Volledige acceptatie vraagt nog verificatie tegen een echte klant-AD, inclusief group mapping, certificaatketen en password-change policy responses.
+- API blijft bewust buiten P0/MVP.

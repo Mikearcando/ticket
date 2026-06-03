@@ -154,7 +154,7 @@ Beheerregels:
 
 ## Basisrapportage
 
-Gebruik `/admin/reports` voor rapportages zodra deze route beschikbaar is.
+Gebruik `/admin/reports` voor KPI's, tijdrapportage en exports. Managers en admins kunnen CSV/PDF downloaden met de actieve filters. CSV-export beschermt tegen spreadsheet-formules in klantvelden.
 
 Minimale rapportagevragen:
 
@@ -163,6 +163,7 @@ Minimale rapportagevragen:
 - Welke agents hebben de meeste open tickets?
 - Wat is de gemiddelde afhandeltijd per prioriteit?
 - Welke categorieen veroorzaken de meeste tickets?
+- Hoeveel tijd is per agent en per ticket geboekt in de gekozen periode?
 
 ## Auditlog
 
@@ -176,9 +177,11 @@ Gebruik `/admin/audit` om ticketacties te controleren. De viewer toont onder mee
 
 Filter op ticketnummer of actietype bij incidentonderzoek of SLA-discussies.
 
+Zonder ticketfilter toont `/admin/audit` ook system-auditregels, waaronder AD-login, AD-fallback, AD-wachtwoordwijzigingen en AD-connectietests.
+
 ## Configuratie
 
-Gebruik `/admin/config` om runtime-instellingen te controleren zonder geheime waarden te tonen. Managers kunnen deze status bekijken. Admins kunnen applicatie-, database-, SMTP- en retentie-instellingen via de web-UI aanpassen; wachtwoordvelden blijven leeg en behouden de bestaande secret tenzij expliciet een nieuwe waarde wordt ingevuld of de wisoptie wordt aangevinkt. Herstart daarna de applicatiecontainer of webserver als de runtime de waarden al had geladen.
+Gebruik `/admin/config` om runtime-instellingen te controleren zonder geheime waarden te tonen. Managers kunnen deze status bekijken. Admins kunnen applicatie-, database-, SMTP-, IMAP-, AD/LDAPS-, thema- en retentie-instellingen via de web-UI aanpassen; wachtwoordvelden blijven leeg en behouden de bestaande secret tenzij expliciet een nieuwe waarde wordt ingevuld of de wisoptie wordt aangevinkt. Herstart daarna de applicatiecontainer of webserver als de runtime de waarden al had geladen.
 
 ## P1-functies
 
@@ -188,8 +191,10 @@ Gebruik `/admin/config` om runtime-instellingen te controleren zonder geheime wa
 - CSAT: bij sluiten van een ticket wordt een beoordelingslink meegestuurd.
 - Exports: download CSV of PDF via `/admin/reports`.
 - Webhooks: beheer Teams/Slack/eigen endpoints via `/admin/webhooks`.
-- IMAP-intake: configureer IMAP via `/admin/config` en draai `php imap_intake.php`.
-- AD/LDAPS: configureer host, bind-account en group mapping via `/admin/config`; test de verbinding op dezelfde pagina.
+- Webhook-URLs worden in de UI gemaskeerd omdat Teams/Slack-URLs bearer secrets zijn. Gebruik in productie alleen HTTPS-endpoints. De payload bevat ticketnummer, status, prioriteit, URL en onderwerp; zet geen gevoelige persoonsgegevens in ticketonderwerpen wanneer externe webhooks actief zijn.
+- IMAP-intake: configureer IMAP via `/admin/config` en draai `php imap_intake.php`. Nieuwe e-mails worden tickets; e-mails met een bestaand ticketnummer `TKT-YYYY-NNNNNN` in onderwerp of body worden als publieke klantreactie toegevoegd.
+- AD/LDAPS: configureer host, bind-account, TLS-certificaatcontrole en group mapping via `/admin/config`; test bind/search op dezelfde pagina.
+- AD-gebruikers krijgen auth-source `ad`; lokale wachtwoordwijzigingen en resetlinks gelden alleen voor lokale accounts. Lokale admin-login blijft beschikbaar als fallback voor lokale accounts. AD-login, geblokkeerde fallback, wachtwoordwijzigingen en connectietests worden in de system-audit vastgelegd.
 - Thema: stel brand/accentkleur in via `/admin/config`; gebruikers kunnen in de navigatie darkmode wisselen.
 
 ## Veilig beheer

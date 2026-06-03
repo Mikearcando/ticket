@@ -11,6 +11,7 @@ final class App
 {
     private PDO $db;
     private array $settings;
+    private ?string $lastAdLoginFailure = null;
     private const STATUSES = ['nieuw', 'open', 'in_behandeling', 'wachtend_op_klant', 'opgelost', 'gesloten'];
     private const PRIORITIES = ['laag', 'normaal', 'hoog', 'kritiek'];
     private const ROLES = [
@@ -230,10 +231,15 @@ final class App
         $processed = 0;
         foreach (imap_search($box, 'UNSEEN') ?: [] as $msgNo) {
             $header = imap_headerinfo($box, $msgNo);
-            $messageId = trim((string) ($header->message_id ?? 'imap-' . $msgNo . '-' . time()));
+            $uid = function_exists('imap_uid') ? (string) imap_uid($box, $msgNo) : (string) $msgNo;
+            $messageId = trim((string) ($header->message_id ?? ''));
+            if ($messageId === '') {
+                $messageId = 'imap-' . md5((string) $imap['mailbox'] . '|' . $uid);
+            }
             $stmt = $this->db->prepare('SELECT COUNT(*) FROM inbound_mail_log WHERE message_id = ?');
             $stmt->execute([$messageId]);
             if ((int) $stmt->fetchColumn() > 0) {
+                imap_setflag_full($box, (string) $msgNo, '\\Seen');
                 continue;
             }
             $subject = imap_utf8((string) ($header->subject ?? 'E-mail ticket'));
@@ -244,16 +250,25 @@ final class App
             if ($body === '') {
                 $body = trim((string) imap_body($box, $msgNo));
             }
+            $body = trim(quoted_printable_decode($body));
             $this->db->beginTransaction();
-            $number = $this->nextTicketNumber();
-            $token = bin2hex(random_bytes(32));
-            $deadline = $this->deadlineFor('normaal');
-            $firstResponseDeadline = $this->firstResponseDeadlineFor('normaal');
-            $insert = $this->db->prepare('INSERT INTO tickets (ticket_number, subject, description, status, priority, category_id, customer_name, customer_email, customer_token, sla_deadline, first_response_deadline) VALUES (?, ?, ?, "nieuw", "normaal", ?, ?, ?, ?, ?, ?)');
-            $insert->execute([$number, mb_substr($subject, 0, 255), $body, $categoryId, mb_substr($name, 0, 100), mb_substr($email, 0, 150), $token, $deadline, $firstResponseDeadline]);
-            $ticketId = (int) $this->db->lastInsertId();
+            $existingTicket = $this->ticketFromInboundSubject($subject . "\n" . $body);
+            if ($existingTicket) {
+                $ticketId = (int) $existingTicket['id'];
+                $this->db->prepare('INSERT INTO ticket_replies (ticket_id, user_id, author_name, body, is_internal) VALUES (?, NULL, ?, ?, 0)')->execute([$ticketId, mb_substr($name, 0, 100), $body]);
+                $this->audit($ticketId, null, 'IMAP', 'reply_from_email', ['message_id' => $messageId, 'sender' => $email]);
+                $this->notify('reply_from_customer', $this->agentAndAdminEmails($existingTicket), $existingTicket);
+            } else {
+                $number = $this->nextTicketNumber();
+                $token = bin2hex(random_bytes(32));
+                $deadline = $this->deadlineFor('normaal');
+                $firstResponseDeadline = $this->firstResponseDeadlineFor('normaal');
+                $insert = $this->db->prepare('INSERT INTO tickets (ticket_number, subject, description, status, priority, category_id, customer_name, customer_email, customer_token, sla_deadline, first_response_deadline) VALUES (?, ?, ?, "nieuw", "normaal", ?, ?, ?, ?, ?, ?)');
+                $insert->execute([$number, mb_substr($subject, 0, 255), $body, $categoryId, mb_substr($name, 0, 100), mb_substr($email, 0, 150), $token, $deadline, $firstResponseDeadline]);
+                $ticketId = (int) $this->db->lastInsertId();
+                $this->audit($ticketId, null, 'IMAP', 'ticket_created_from_email', ['message_id' => $messageId]);
+            }
             $this->db->prepare('INSERT INTO inbound_mail_log (message_id, ticket_id, subject, sender) VALUES (?, ?, ?, ?)')->execute([$messageId, $ticketId, $subject, $email]);
-            $this->audit($ticketId, null, 'IMAP', 'ticket_created_from_email', ['message_id' => $messageId]);
             $this->db->commit();
             imap_setflag_full($box, (string) $msgNo, '\\Seen');
             $processed++;
@@ -374,7 +389,7 @@ final class App
         $ticket = $this->ticketByToken($token);
         $replies = $this->replies((int) $ticket['id'], false);
         $body = '<section class="hero"><div><h1>' . $this->e($ticket['ticket_number']) . '</h1><p>' . $this->e($ticket['subject']) . '</p></div>' . $this->badge($ticket['status']) . '</section>';
-        $body .= $this->ticketSummary($ticket, false) . $this->timeline((int) $ticket['id'], $replies, false);
+        $body .= $this->ticketSummary($ticket, false) . $this->timeline((int) $ticket['id'], $replies, false, (string) $ticket['customer_token']);
         if ($ticket['status'] !== 'gesloten') {
             $body .= $this->errors($errors) . '<form class="panel" method="post" action="/ticket/' . $this->e($token) . '/reply" enctype="multipart/form-data">' . $this->csrf();
             $body .= '<label>Reactie<textarea name="body" rows="5" required></textarea></label><label>Bijlage<input type="file" name="attachment" accept=".png,.jpg,.jpeg,.pdf,.zip,.log"></label><div class="actions"><button class="button">Reactie plaatsen</button></div></form>';
@@ -403,7 +418,9 @@ final class App
     private function setTheme(): void
     {
         $this->verifyCsrf();
-        $next = ($_COOKIE['theme'] ?? '') === 'dark' ? 'light' : 'dark';
+        $current = $_COOKIE['theme'] ?? $this->appSetting('theme_dark', '');
+        $isDark = $current === 'dark' || $current === '1';
+        $next = $isDark ? 'light' : 'dark';
         setcookie('theme', $next, [
             'expires' => time() + 31536000,
             'path' => '/',
@@ -432,7 +449,7 @@ final class App
         }
         $adUser = $this->attemptAdLogin($email, (string) ($_POST['password'] ?? ''));
         if ($adUser) {
-            $this->recordLoginAttempt($email, true);
+            $this->recordLoginAttempt($email, true, 'ad');
             $_SESSION['user_id'] = (int) $adUser['id'];
             $this->db->prepare('UPDATE users SET last_login = NOW() WHERE id = ?')->execute([$adUser['id']]);
             $this->redirect('/dashboard');
@@ -440,12 +457,25 @@ final class App
         $stmt = $this->db->prepare('SELECT * FROM users WHERE email = ? AND is_active = 1');
         $stmt->execute([$email]);
         $user = $stmt->fetch();
+        if ($user && ($user['auth_source'] ?? 'local') === 'ad') {
+            if ($this->lastAdLoginFailure === null) {
+                $this->recordLoginAttempt($email, false, 'local');
+            }
+            $this->safeAudit('ad_local_fallback_blocked', ['actor' => $email, 'user_id' => (int) $user['id'], 'result' => $this->lastAdLoginFailure]);
+            $this->loginForm(['Gebruik uw domeinaccount om in te loggen.']);
+            return;
+        }
         if (!$user || !password_verify((string) ($_POST['password'] ?? ''), $user['password_hash'])) {
-            $this->recordLoginAttempt($email, false);
+            if ($this->lastAdLoginFailure === null) {
+                $this->recordLoginAttempt($email, false, 'local');
+            }
             $this->loginForm(['Ongeldige inloggegevens.']);
             return;
         }
-        $this->recordLoginAttempt($email, true);
+        $this->recordLoginAttempt($email, true, 'local');
+        if ($this->lastAdLoginFailure !== null) {
+            $this->safeAudit('ad_local_fallback_success', ['actor' => $email, 'user_id' => (int) $user['id'], 'result' => $this->lastAdLoginFailure]);
+        }
         $_SESSION['user_id'] = (int) $user['id'];
         $this->db->prepare('UPDATE users SET last_login = NOW() WHERE id = ?')->execute([$user['id']]);
         $this->redirect('/dashboard');
@@ -490,9 +520,13 @@ final class App
         return (int) $stmt->fetchColumn() >= 5;
     }
 
-    private function recordLoginAttempt(string $email, bool $success): void
+    private function recordLoginAttempt(string $email, bool $success, ?string $authSource = null): void
     {
-        $this->db->prepare('INSERT INTO login_attempts (email, ip_address, success) VALUES (?, ?, ?)')->execute([$email, $this->clientIp(), $success ? 1 : 0]);
+        if ($this->columnExists('login_attempts', 'auth_source')) {
+            $this->db->prepare('INSERT INTO login_attempts (email, ip_address, auth_source, success) VALUES (?, ?, ?, ?)')->execute([$email, $this->clientIp(), $authSource, $success ? 1 : 0]);
+        } else {
+            $this->db->prepare('INSERT INTO login_attempts (email, ip_address, success) VALUES (?, ?, ?)')->execute([$email, $this->clientIp(), $success ? 1 : 0]);
+        }
         if ($success) {
             $this->db->prepare('DELETE FROM login_attempts WHERE email = ? AND ip_address = ?')->execute([$email, $this->clientIp()]);
         }
@@ -521,10 +555,15 @@ final class App
     {
         $user = $this->requireUser();
         $checked = $user['notify_on_assignment'] ? ' checked' : '';
+        $isAdUser = ($user['auth_source'] ?? 'local') === 'ad';
         $body = '<section class="hero"><div><h1>Profiel</h1><p>Naam, wachtwoord en notificatievoorkeuren.</p></div></section>';
         $body .= '<form class="panel form-grid" method="post" action="/profile">' . $this->csrf() . $this->errors($messages);
         $body .= '<label>Naam<input name="name" required value="' . $this->e($user['name']) . '"></label><label>E-mail<input type="email" value="' . $this->e($user['email']) . '" disabled></label>';
-        $body .= '<label class="wide">Nieuw wachtwoord<input type="password" name="password" minlength="10" placeholder="Leeg laten om niet te wijzigen"></label>';
+        if ($isAdUser) {
+            $body .= '<div class="notice wide">Wachtwoord wordt beheerd via AD/LDAPS.</div>';
+        } else {
+            $body .= '<label class="wide">Nieuw wachtwoord<input type="password" name="password" minlength="10" placeholder="Leeg laten om niet te wijzigen"></label>';
+        }
         $body .= '<label class="wide check"><input type="checkbox" name="notify_on_assignment" value="1"' . $checked . '> Mail mij bij toewijzing</label>';
         $body .= '<div class="wide actions"><button class="button">Profiel opslaan</button></div></form>';
         $this->layout('Profiel', $body);
@@ -541,6 +580,10 @@ final class App
         }
         $notify = isset($_POST['notify_on_assignment']) ? 1 : 0;
         $password = (string) ($_POST['password'] ?? '');
+        if (($user['auth_source'] ?? 'local') === 'ad' && $password !== '') {
+            $this->profileForm(['Wachtwoord wordt beheerd via AD.']);
+            return;
+        }
         if ($password !== '') {
             if (strlen($password) < 10) {
                 $this->profileForm(['Gebruik minimaal 10 tekens voor een nieuw wachtwoord.']);
@@ -556,7 +599,10 @@ final class App
     private function forgotPassword(): void
     {
         $this->verifyCsrf();
-        $stmt = $this->db->prepare('SELECT * FROM users WHERE email = ? AND is_active = 1');
+        $sql = $this->columnExists('users', 'auth_source')
+            ? 'SELECT * FROM users WHERE email = ? AND is_active = 1 AND auth_source = "local"'
+            : 'SELECT * FROM users WHERE email = ? AND is_active = 1';
+        $stmt = $this->db->prepare($sql);
         $stmt->execute([trim((string) ($_POST['email'] ?? ''))]);
         if ($user = $stmt->fetch()) {
             $token = bin2hex(random_bytes(32));
@@ -580,7 +626,10 @@ final class App
             $this->resetForm($token, ['Gebruik minimaal 10 tekens.']);
             return;
         }
-        $stmt = $this->db->prepare('SELECT * FROM password_resets WHERE token = ? AND used_at IS NULL AND expires_at > NOW()');
+        $sql = $this->columnExists('users', 'auth_source')
+            ? 'SELECT pr.* FROM password_resets pr JOIN users u ON u.id = pr.user_id WHERE pr.token = ? AND pr.used_at IS NULL AND pr.expires_at > NOW() AND u.auth_source = "local"'
+            : 'SELECT * FROM password_resets WHERE token = ? AND used_at IS NULL AND expires_at > NOW()';
+        $stmt = $this->db->prepare($sql);
         $stmt->execute([$token]);
         $reset = $stmt->fetch();
         if (!$reset) {
@@ -601,17 +650,44 @@ final class App
         $open = $this->countWhere('status NOT IN ("opgelost","gesloten")');
         $body = '<section class="hero"><div><h1>Dashboard</h1><p>Werkvoorraad en SLA-signalen</p></div><a class="button" href="/tickets">Tickets</a></section>';
         $body .= '<section class="kpis"><div><b>' . $mine . '</b><span>Mijn open tickets</span></div><div><b>' . $new . '</b><span>Onbehandeld</span></div><div><b>' . $waiting . '</b><span>Wachtend op klant</span></div><div><b>' . $open . '</b><span>Totaal open</span></div></section>';
-        $body .= $this->ticketTable($this->filteredTickets(['assigned_to' => (string) $user['id'], 'open_only' => '1']), true);
+        if ($this->hasMinimumRole($user, 'manager')) {
+            $body .= $this->managerDashboardKpis();
+        }
+        $actions = $this->hasMinimumRole($user, 'agent');
+        $body .= '<section class="dashboard-columns">';
+        $body .= $this->workQueuePanel('Mijn open tickets', ['assigned_to' => (string) $user['id'], 'open_only' => '1', 'limit' => '10'], $actions);
+        $body .= $this->workQueuePanel('Onbehandeld', ['status' => 'nieuw', 'limit' => '10'], $actions);
+        $body .= $this->workQueuePanel('Wachtend op klant', ['status' => 'wachtend_op_klant', 'limit' => '10'], $actions);
+        $body .= '</section>';
         $this->layout('Dashboard', $body);
     }
 
     private function tickets(): void
     {
-        $this->requireUser();
-        $body = '<section class="hero"><div><h1>Ticketoverzicht</h1><p>Filter, zoek en handel tickets direct af.</p></div><a class="button" href="/dashboard">Dashboard</a></section>';
+        $user = $this->requireUser();
+        $exportLinks = $this->hasMinimumRole($user, 'manager') ? '<a class="button secondary" href="' . $this->e($this->exportUrl('csv', $_GET)) . '">CSV</a><a class="button secondary" href="' . $this->e($this->exportUrl('pdf', $_GET)) . '">PDF</a>' : '';
+        $body = '<section class="hero"><div><h1>Ticketoverzicht</h1><p>Filter, zoek en handel tickets direct af.</p></div><div class="actions"><a class="button" href="/dashboard">Dashboard</a>' . $exportLinks . '</div></section>';
         $body .= $this->filters();
-        $body .= $this->ticketTable($this->filteredTickets($_GET), true);
+        $body .= $this->ticketTable($this->filteredTickets($_GET), $this->hasMinimumRole($user, 'agent'));
         $this->layout('Tickets', $body);
+    }
+
+    private function managerDashboardKpis(): string
+    {
+        $avgFirst = $this->db->query('SELECT AVG(TIMESTAMPDIFF(MINUTE, created_at, first_response_at)) / 60 FROM tickets WHERE first_response_at IS NOT NULL')->fetchColumn();
+        $slaOk = $this->db->query('SELECT ROUND(100 * SUM(sla_deadline IS NULL OR closed_at IS NULL OR closed_at <= sla_deadline) / GREATEST(COUNT(*),1), 1) FROM tickets')->fetchColumn();
+        $agentRows = '';
+        foreach ($this->db->query('SELECT COALESCE(u.name, "Niet toegewezen") agent, COUNT(t.id) total FROM tickets t LEFT JOIN users u ON u.id=t.assigned_to GROUP BY agent ORDER BY total DESC LIMIT 6') as $row) {
+            $agentRows .= '<tr><td>' . $this->e($row['agent']) . '</td><td>' . (int) $row['total'] . '</td></tr>';
+        }
+        $body = '<section class="kpis manager-kpis"><div><b>' . round((float) $avgFirst, 1) . '</b><span>Gem. eerste reactietijd uren</span></div><div><b>' . $slaOk . '%</b><span>SLA-naleving</span></div></section>';
+        $body .= '<table class="table"><tr><th>Agent</th><th>Tickets</th></tr>' . ($agentRows ?: '<tr><td colspan="2">Geen tickets.</td></tr>') . '</table>';
+        return $body;
+    }
+
+    private function workQueuePanel(string $title, array $filters, bool $actions): string
+    {
+        return '<section class="panel"><h2>' . $this->e($title) . '</h2>' . $this->ticketTable($this->filteredTickets($filters), false) . ($actions ? '<p><a class="button secondary" href="/tickets">Bulk verwerken</a></p>' : '') . '</section>';
     }
 
     private function ticketDetail(int $id): void
@@ -678,8 +754,13 @@ final class App
                 }
             }
             if ($assignedTo !== null) {
-                $this->db->prepare('UPDATE tickets SET assigned_to = ? WHERE id = ?')->execute([$assignedTo, $id]);
-                $this->audit($id, (int) $user['id'], $user['name'], 'bulk_assigned', ['assigned_to' => $assignedTo]);
+                $assignee = $this->validAssignee($assignedTo);
+                if ($assignee) {
+                    $this->db->prepare('UPDATE tickets SET assigned_to = ? WHERE id = ?')->execute([$assignedTo, $id]);
+                    $this->audit($id, (int) $user['id'], $user['name'], 'bulk_assigned', ['from' => $ticket['assigned_to'], 'to' => $assignedTo]);
+                    $assignedTicket = $this->ticket($id);
+                    $this->notify('ticket_assigned', [(string) $assignee['email']], $assignedTicket);
+                }
             }
         }
         $this->redirect('/tickets');
@@ -700,8 +781,12 @@ final class App
         $updated = $this->ticket($id);
         if ($next === 'gesloten') {
             $updated['csat_link'] = $this->ensureCsatSurvey($id);
+            $this->notify('ticket_closed', [$updated['customer_email']], $updated);
+            $updated['csat_link'] = '';
+            $this->notify('status_changed', $this->agentAndAdminEmails($updated), $updated);
+            $this->redirect('/tickets/' . $id);
         }
-        $this->notify($next === 'gesloten' ? 'ticket_closed' : 'status_changed', array_unique([$updated['customer_email'], ...$this->agentAndAdminEmails($updated)]), $updated);
+        $this->notify('status_changed', array_unique([$updated['customer_email'], ...$this->agentAndAdminEmails($updated)]), $updated);
         $this->redirect('/tickets/' . $id);
     }
 
@@ -709,11 +794,17 @@ final class App
     {
         $user = $this->requireMinimumRole('agent');
         $this->verifyCsrf();
+        $this->ticket($id);
         if (!$this->tableExists('ticket_time_entries')) {
             $this->layout('Tijdregistratie', $this->migrationNotice('tijdregistratie'));
             return;
         }
-        $minutes = max(1, (int) ($_POST['minutes'] ?? 0));
+        $minutesInput = (string) ($_POST['minutes'] ?? '');
+        if (!ctype_digit($minutesInput) || (int) $minutesInput < 1 || (int) $minutesInput > 1440) {
+            $this->layout('Tijdregistratie', '<section class="panel danger"><h1>Ongeldige tijdregistratie</h1><p>Minuten moet tussen 1 en 1440 liggen.</p><a class="button" href="/tickets/' . $id . '">Terug</a></section>');
+            return;
+        }
+        $minutes = (int) $minutesInput;
         $note = trim((string) ($_POST['note'] ?? ''));
         $this->db->prepare('INSERT INTO ticket_time_entries (ticket_id, user_id, minutes, note) VALUES (?, ?, ?, ?)')->execute([$id, $user['id'], $minutes, $note]);
         $this->audit($id, (int) $user['id'], $user['name'], 'time_logged', ['minutes' => $minutes]);
@@ -757,7 +848,12 @@ final class App
             $this->csatForm($token, ['Kies een score van 1 tot en met 5.']);
             return;
         }
-        $this->db->prepare('UPDATE csat_surveys SET score = ?, comment = ?, submitted_at = NOW() WHERE token = ?')->execute([$score, trim((string) ($_POST['comment'] ?? '')), $token]);
+        $update = $this->db->prepare('UPDATE csat_surveys SET score = ?, comment = ?, submitted_at = NOW() WHERE token = ? AND submitted_at IS NULL');
+        $update->execute([$score, trim((string) ($_POST['comment'] ?? '')), $token]);
+        if ($update->rowCount() !== 1) {
+            $this->csatForm($token);
+            return;
+        }
         $this->audit((int) $survey['ticket_id'], null, 'Klant', 'csat_submitted', ['score' => $score]);
         $this->csatForm($token);
     }
@@ -767,22 +863,15 @@ final class App
         $user = $this->requireMinimumRole('agent');
         $this->verifyCsrf();
         $agent = ($_POST['assigned_to'] ?? '') === '' ? null : (int) $_POST['assigned_to'];
-        if ($agent !== null) {
-            $stmt = $this->db->prepare('SELECT COUNT(*) FROM users WHERE id = ? AND is_active = 1 AND role IN ("agent","manager","admin")');
-            $stmt->execute([$agent]);
-            if ((int) $stmt->fetchColumn() === 0) {
-                $agent = null;
-            }
+        $assignee = $agent === null ? null : $this->validAssignee($agent);
+        if ($agent !== null && !$assignee) {
+            $agent = null;
         }
         $this->db->prepare('UPDATE tickets SET assigned_to = ? WHERE id = ?')->execute([$agent, $id]);
         $this->audit($id, (int) $user['id'], $user['name'], 'assigned', ['assigned_to' => $agent]);
         $ticket = $this->ticket($id);
-        if ($agent) {
-            $stmt = $this->db->prepare('SELECT email FROM users WHERE id = ? AND is_active = 1 AND role IN ("agent","manager","admin")');
-            $stmt->execute([$agent]);
-            if ($email = $stmt->fetchColumn()) {
-                $this->notify('ticket_assigned', [(string) $email], $ticket);
-            }
+        if ($assignee) {
+            $this->notify('ticket_assigned', [(string) $assignee['email']], $ticket);
         }
         $this->redirect('/tickets/' . $id);
     }
@@ -864,10 +953,12 @@ final class App
         }
         $active = $user['is_active'] ? ' checked' : '';
         $notify = $user['notify_on_assignment'] ? ' checked' : '';
+        $isAdUser = ($user['auth_source'] ?? 'local') === 'ad';
         $body = '<section class="hero"><div><h1>Gebruiker bewerken</h1><p>' . $this->e($user['email']) . '</p></div><a class="button secondary" href="/admin/users">Terug</a></section>';
         $body .= '<form class="panel form-grid" method="post" action="/admin/users/' . (int) $user['id'] . '">' . $this->csrf() . $this->errors($errors);
         $body .= '<label>Naam<input name="name" required value="' . $this->e($user['name']) . '"></label><label>E-mail<input type="email" name="email" required value="' . $this->e($user['email']) . '"></label>';
-        $body .= '<label>Rol<select name="role">' . $this->roleOptions((string) $user['role']) . '</select></label><label>Nieuw wachtwoord<input type="password" name="password" minlength="10" placeholder="Leeg laten om niet te wijzigen"></label>';
+        $body .= '<label>Rol<select name="role">' . $this->roleOptions((string) $user['role']) . '</select></label>';
+        $body .= $isAdUser ? '<div class="notice">AD-account: lokaal wachtwoord kan hier niet worden gewijzigd.</div>' : '<label>Nieuw wachtwoord<input type="password" name="password" minlength="10" placeholder="Leeg laten om niet te wijzigen"></label>';
         $body .= '<label class="wide check"><input type="checkbox" name="is_active" value="1"' . $active . '> Account actief</label>';
         $body .= '<label class="wide check"><input type="checkbox" name="notify_on_assignment" value="1"' . $notify . '> Mail bij toewijzing</label>';
         $body .= '<div class="wide actions"><button class="button">Wijzigingen opslaan</button></div></form>';
@@ -901,8 +992,17 @@ final class App
             if ((int) $activeAdmins <= 1) {
                 $errors[] = 'Er moet minimaal een actieve admin overblijven.';
             }
+            if (($target['auth_source'] ?? 'local') === 'local') {
+                $activeLocalAdmins = $this->db->query('SELECT COUNT(*) FROM users WHERE role = "admin" AND auth_source = "local" AND is_active = 1')->fetchColumn();
+                if ((int) $activeLocalAdmins <= 1) {
+                    $errors[] = 'Er moet minimaal een actieve lokale break-glass admin overblijven.';
+                }
+            }
         }
         $password = (string) ($_POST['password'] ?? '');
+        if (($target['auth_source'] ?? 'local') === 'ad' && $password !== '') {
+            $errors[] = 'Lokaal wachtwoord van een AD-account kan niet worden gewijzigd.';
+        }
         if ($password !== '' && strlen($password) < 10) {
             $errors[] = 'Gebruik minimaal 10 tekens voor een nieuw wachtwoord.';
         }
@@ -1034,6 +1134,7 @@ final class App
     private function adminReports(): void
     {
         $this->requireMinimumRole('manager');
+        $period = $this->reportPeriod();
         $avg = $this->db->query('SELECT AVG(TIMESTAMPDIFF(HOUR, created_at, closed_at)) FROM tickets WHERE closed_at IS NOT NULL')->fetchColumn();
         $avgFirst = $this->db->query('SELECT AVG(TIMESTAMPDIFF(MINUTE, created_at, first_response_at)) / 60 FROM tickets WHERE first_response_at IS NOT NULL')->fetchColumn();
         $slaOk = $this->db->query('SELECT ROUND(100 * SUM(sla_deadline IS NULL OR closed_at IS NULL OR closed_at <= sla_deadline) / GREATEST(COUNT(*),1), 1) FROM tickets')->fetchColumn();
@@ -1043,9 +1144,11 @@ final class App
         foreach ($this->db->query('SELECT COALESCE(u.name, "Niet toegewezen") agent, COUNT(t.id) total FROM tickets t LEFT JOIN users u ON u.id=t.assigned_to GROUP BY agent ORDER BY total DESC') as $r) {
             $rows .= '<tr><td>' . $this->e($r['agent']) . '</td><td>' . (int) $r['total'] . '</td></tr>';
         }
-        $body = '<section class="hero"><div><h1>Rapportages</h1><p>KPI’s voor servicekwaliteit.</p></div><div class="actions"><a class="button secondary" href="/admin/export?format=csv">CSV</a><a class="button secondary" href="/admin/export?format=pdf">PDF</a></div></section>';
+        $body = '<section class="hero"><div><h1>Rapportages</h1><p>KPI’s voor servicekwaliteit.</p></div><div class="actions"><a class="button secondary" href="' . $this->e($this->exportUrl('csv', $_GET)) . '">CSV</a><a class="button secondary" href="' . $this->e($this->exportUrl('pdf', $_GET)) . '">PDF</a></div></section>';
         $body .= '<section class="kpis"><div><b>' . $this->countWhere('status NOT IN ("opgelost","gesloten")') . '</b><span>Open tickets</span></div><div><b>' . round((float) $avgFirst, 1) . '</b><span>Gem. eerste reactietijd uren</span></div><div><b>' . round((float) $avg, 1) . '</b><span>Gem. afhandeltijd uren</span></div><div><b>' . $slaOk . '%</b><span>SLA-naleving</span></div><div><b>' . round(((int) $timeTotal) / 60, 1) . '</b><span>Gelogde uren</span></div><div><b>' . round((float) $csatAvg, 1) . '</b><span>Gem. CSAT</span></div></section>';
         $body .= '<table class="table"><tr><th>Agent</th><th>Tickets</th></tr>' . $rows . '</table>';
+        $body .= '<form class="panel filters" method="get"><input type="date" name="date_from" value="' . $this->e($period['date_from']) . '"><input type="date" name="date_to" value="' . $this->e($period['date_to']) . '"><button class="button">Tijdrapport filteren</button></form>';
+        $body .= $this->timeReportPanel($period);
         $this->layout('Rapportages', $body);
     }
 
@@ -1069,7 +1172,7 @@ final class App
         $out = fopen('php://output', 'w');
         fputcsv($out, ['ticketnummer', 'status', 'prioriteit', 'categorie', 'agent', 'klant', 'email', 'aangemaakt']);
         foreach ($tickets as $ticket) {
-            fputcsv($out, [$ticket['ticket_number'], $ticket['status'], $ticket['priority'], $ticket['category_name'], $ticket['agent_name'], $ticket['customer_name'], $ticket['customer_email'], $ticket['created_at']]);
+            fputcsv($out, array_map(fn ($value) => $this->csvCell($value), [$ticket['ticket_number'], $ticket['status'], $ticket['priority'], $ticket['category_name'], $ticket['agent_name'], $ticket['customer_name'], $ticket['customer_email'], $ticket['created_at']]));
         }
         exit;
     }
@@ -1077,29 +1180,50 @@ final class App
     private function adminAudit(): void
     {
         $this->requireMinimumRole('manager');
-        $where = [];
+        $ticketWhere = [];
         $params = [];
         if (($this->query('ticket') ?? '') !== '') {
-            $where[] = 't.ticket_number LIKE ?';
+            $ticketWhere[] = 't.ticket_number LIKE ?';
             $params[] = '%' . $this->query('ticket') . '%';
         }
         if (($this->query('action') ?? '') !== '') {
-            $where[] = 'a.action = ?';
+            $ticketWhere[] = 'a.action = ?';
             $params[] = $this->query('action');
         }
-        $sql = 'SELECT a.*, t.ticket_number FROM audit_log a JOIN tickets t ON t.id = a.ticket_id';
-        if ($where) {
-            $sql .= ' WHERE ' . implode(' AND ', $where);
+        $sql = 'SELECT a.created_at, a.ticket_id, t.ticket_number, a.actor_name, a.action, a.details, "ticket" source FROM audit_log a JOIN tickets t ON t.id = a.ticket_id';
+        if ($ticketWhere) {
+            $sql .= ' WHERE ' . implode(' AND ', $ticketWhere);
         }
         $sql .= ' ORDER BY a.created_at DESC LIMIT 300';
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
-        $rows = '';
-        foreach ($stmt->fetchAll() as $row) {
-            $rows .= '<tr><td>' . $this->e($row['created_at']) . '</td><td><a href="/tickets/' . (int) $row['ticket_id'] . '">' . $this->e($row['ticket_number']) . '</a></td><td>' . $this->e($row['actor_name']) . '</td><td>' . $this->e($row['action']) . '</td><td><code>' . $this->e((string) $row['details']) . '</code></td></tr>';
+        $events = $stmt->fetchAll();
+        if (($this->query('ticket') ?? '') === '' && $this->tableExists('system_audit_log')) {
+            $systemWhere = [];
+            $systemParams = [];
+            if (($this->query('action') ?? '') !== '') {
+                $systemWhere[] = 'action = ?';
+                $systemParams[] = $this->query('action');
+            }
+            $systemSql = 'SELECT created_at, NULL ticket_id, NULL ticket_number, actor_name, action, details, "system" source FROM system_audit_log';
+            if ($systemWhere) {
+                $systemSql .= ' WHERE ' . implode(' AND ', $systemWhere);
+            }
+            $systemSql .= ' ORDER BY created_at DESC LIMIT 300';
+            $systemStmt = $this->db->prepare($systemSql);
+            $systemStmt->execute($systemParams);
+            $events = array_merge($events, $systemStmt->fetchAll());
         }
+        usort($events, fn ($a, $b) => strcmp((string) $b['created_at'], (string) $a['created_at']));
+        $events = array_slice($events, 0, 300);
+        $rows = '';
+        foreach ($events as $row) {
+            $target = $row['source'] === 'ticket' ? '<a href="/tickets/' . (int) $row['ticket_id'] . '">' . $this->e((string) $row['ticket_number']) . '</a>' : 'Systeem';
+            $rows .= '<tr><td>' . $this->e($row['created_at']) . '</td><td>' . $target . '</td><td>' . $this->e($row['actor_name']) . '</td><td>' . $this->e($row['action']) . '</td><td><code>' . $this->e((string) $row['details']) . '</code></td></tr>';
+        }
+        $actions = ['ticket_created', 'status_changed', 'assigned', 'bulk_status_changed', 'bulk_assigned', 'reply_added', 'reply_from_email', 'time_logged', 'sla_warning', 'sla_breach', 'ad_login_success', 'ad_login_failed', 'ad_local_fallback_success', 'ad_local_fallback_blocked', 'ad_password_change_success', 'ad_password_change_failed', 'ad_connection_test'];
         $body = '<section class="hero"><div><h1>Auditlog</h1><p>Statuswijzigingen, toewijzingen, reacties en SLA-events.</p></div></section>';
-        $body .= '<form class="panel filters" method="get"><input name="ticket" placeholder="Ticketnummer" value="' . $this->e((string) $this->query('ticket')) . '"><select name="action"><option value="">Alle acties</option>' . $this->simpleOptions(['ticket_created', 'status_changed', 'assigned', 'reply_added', 'sla_warning', 'sla_breach'], (string) $this->query('action')) . '</select><button class="button">Filter</button></form>';
+        $body .= '<form class="panel filters" method="get"><input name="ticket" placeholder="Ticketnummer" value="' . $this->e((string) $this->query('ticket')) . '"><select name="action"><option value="">Alle acties</option>' . $this->simpleOptions($actions, (string) $this->query('action')) . '</select><button class="button">Filter</button></form>';
         $body .= '<table class="table"><tr><th>Tijd</th><th>Ticket</th><th>Actor</th><th>Actie</th><th>Details</th></tr>' . ($rows ?: '<tr><td colspan="5">Geen auditregels gevonden.</td></tr>') . '</table>';
         $this->layout('Auditlog', $body);
     }
@@ -1190,7 +1314,7 @@ final class App
         }
         $rows = '';
         foreach ($this->db->query('SELECT * FROM webhook_endpoints ORDER BY created_at DESC') as $hook) {
-            $rows .= '<tr><td>' . $this->e($hook['name']) . '<small>' . $this->e($hook['url']) . '</small></td><td>' . $this->e($hook['events']) . '</td><td>' . ($hook['is_active'] ? 'Actief' : 'Uit') . '</td><td><form method="post" action="/admin/webhooks/' . (int) $hook['id'] . '/toggle">' . $this->csrf() . '<button class="button secondary">Toggle</button></form></td></tr>';
+            $rows .= '<tr><td>' . $this->e($hook['name']) . '<small>' . $this->e($this->maskedWebhookUrl((string) $hook['url'])) . '</small></td><td>' . $this->e($hook['events']) . '</td><td>' . ($hook['is_active'] ? 'Actief' : 'Uit') . '</td><td><form method="post" action="/admin/webhooks/' . (int) $hook['id'] . '/toggle">' . $this->csrf() . '<button class="button secondary">Toggle</button></form></td></tr>';
         }
         $body = '<section class="hero"><div><h1>Webhooks</h1><p>Teams/Slack of andere HTTP-endpoints bij ticket-events.</p></div></section>' . $this->errors($errors);
         $body .= '<form class="panel form-grid" method="post">' . $this->csrf() . '<label>Naam<input name="name" required></label><label>URL<input name="url" required placeholder="https://..."></label><label class="wide">Events<input name="events" value="*" placeholder="*, ticket_created, status_changed"></label><div class="actions wide"><button class="button">Webhook toevoegen</button></div></form>';
@@ -1208,8 +1332,8 @@ final class App
         }
         $name = trim((string) ($_POST['name'] ?? ''));
         $url = trim((string) ($_POST['url'] ?? ''));
-        if ($name === '' || !filter_var($url, FILTER_VALIDATE_URL)) {
-            $this->adminWebhooks(['Naam en geldige webhook-URL zijn verplicht.']);
+        if ($name === '' || !$this->validWebhookUrl($url)) {
+            $this->adminWebhooks(['Naam en geldige webhook-URL zijn verplicht. Gebruik HTTPS in productie.']);
             return;
         }
         $this->db->prepare('INSERT INTO webhook_endpoints (name, url, events) VALUES (?, ?, ?)')->execute([$name, $url, trim((string) ($_POST['events'] ?? '*')) ?: '*']);
@@ -1299,6 +1423,10 @@ final class App
             'AD_GROUP_AGENT' => trim((string) ($_POST['AD_GROUP_AGENT'] ?? '')),
             'AD_GROUP_MANAGER' => trim((string) ($_POST['AD_GROUP_MANAGER'] ?? '')),
             'AD_GROUP_ADMIN' => trim((string) ($_POST['AD_GROUP_ADMIN'] ?? '')),
+            'AD_TLS_REQUIRE_CERT' => trim((string) ($_POST['AD_TLS_REQUIRE_CERT'] ?? 'demand')),
+            'AD_TLS_CACERTFILE' => trim((string) ($_POST['AD_TLS_CACERTFILE'] ?? '')),
+            'AD_TLS_CACERTDIR' => trim((string) ($_POST['AD_TLS_CACERTDIR'] ?? '')),
+            'AD_NETWORK_TIMEOUT' => trim((string) ($_POST['AD_NETWORK_TIMEOUT'] ?? '5')),
             'DATA_RETENTION_DAYS' => (string) max(365, (int) ($_POST['DATA_RETENTION_DAYS'] ?? 365)),
         ];
 
@@ -1330,6 +1458,15 @@ final class App
         }
         if (!in_array($values['AD_USE_TLS'], ['ldaps', 'starttls'], true)) {
             $errors[] = 'AD_USE_TLS moet ldaps of starttls zijn.';
+        }
+        if ($values['AD_USE_TLS'] === 'starttls' && $values['AD_PORT'] === '636') {
+            $errors[] = 'Gebruik AD_PORT 389 voor starttls of kies ldaps voor poort 636.';
+        }
+        if (!in_array($values['AD_TLS_REQUIRE_CERT'], ['demand', 'hard', 'allow', 'try', 'never'], true)) {
+            $errors[] = 'AD_TLS_REQUIRE_CERT moet demand, hard, allow, try of never zijn.';
+        }
+        if (!ctype_digit($values['AD_NETWORK_TIMEOUT']) || (int) $values['AD_NETWORK_TIMEOUT'] < 1 || (int) $values['AD_NETWORK_TIMEOUT'] > 60) {
+            $errors[] = 'AD_NETWORK_TIMEOUT moet tussen 1 en 60 seconden liggen.';
         }
         if ($errors) {
             $this->adminConfigWithErrors($errors);
@@ -1420,6 +1557,10 @@ final class App
         $body .= '<label>Agent groep DN<input name="AD_GROUP_AGENT" value="' . $value('AD_GROUP_AGENT', (string) ($ad['group_agent'] ?? '')) . '"></label>';
         $body .= '<label>Manager groep DN<input name="AD_GROUP_MANAGER" value="' . $value('AD_GROUP_MANAGER', (string) ($ad['group_manager'] ?? '')) . '"></label>';
         $body .= '<label>Admin groep DN<input name="AD_GROUP_ADMIN" value="' . $value('AD_GROUP_ADMIN', (string) ($ad['group_admin'] ?? '')) . '"></label>';
+        $body .= '<label>TLS certificaatcontrole<select name="AD_TLS_REQUIRE_CERT">' . $this->simpleOptions(['demand', 'hard', 'allow', 'try', 'never'], $value('AD_TLS_REQUIRE_CERT', (string) ($ad['tls_require_cert'] ?? 'demand'))) . '</select></label>';
+        $body .= '<label>CA-bestand<input name="AD_TLS_CACERTFILE" value="' . $value('AD_TLS_CACERTFILE', (string) ($ad['tls_cacertfile'] ?? '')) . '"></label>';
+        $body .= '<label>CA-map<input name="AD_TLS_CACERTDIR" value="' . $value('AD_TLS_CACERTDIR', (string) ($ad['tls_cacertdir'] ?? '')) . '"></label>';
+        $body .= '<label>Netwerk-timeout seconden<input name="AD_NETWORK_TIMEOUT" inputmode="numeric" value="' . $value('AD_NETWORK_TIMEOUT', (string) ($ad['network_timeout'] ?? '5')) . '"></label>';
         $body .= '<label class="check wide"><input type="checkbox" name="clear_AD_BIND_PASSWORD" value="1"> AD bind-wachtwoord wissen</label>';
         $body .= '<h3 class="wide">Thema</h3>';
         $body .= '<label>Brandkleur<input name="THEME_BRAND" value="' . $this->e($this->appSetting('theme_brand', '')) . '" placeholder="#0f6d7a"></label>';
@@ -1435,9 +1576,14 @@ final class App
     {
         $this->requireAdmin();
         $this->verifyCsrf();
-        [$ok, $message] = $this->adConnectionTest();
-        $this->safeAudit('ad_connection_test', ['result' => $ok ? 'ok' : $message]);
-        $this->layout('AD-connectietest', '<section class="hero"><div><h1>AD-connectietest</h1><p>' . $this->e($ok ? 'ok' : $message) . '</p></div><a class="button" href="/admin/config">Terug</a></section>');
+        $result = $this->adConnectionTest();
+        $this->safeAudit('ad_connection_test', $result + ['subject_type' => 'ad', 'subject_id' => (string) ($result['host'] ?? '')]);
+        $rows = '';
+        foreach (['host', 'latency_ms', 'bind_status', 'search_status', 'error_category'] as $key) {
+            $rows .= '<tr><th>' . $this->e($key) . '</th><td>' . $this->e((string) ($result[$key] ?? '')) . '</td></tr>';
+        }
+        $status = ($result['error_category'] ?? null) === null ? 'ok' : (string) $result['error_category'];
+        $this->layout('AD-connectietest', '<section class="hero"><div><h1>AD-connectietest</h1><p>' . $this->e($status) . '</p></div><a class="button" href="/admin/config">Terug</a></section><table class="table config-table">' . $rows . '</table>');
     }
 
     private function filters(): string
@@ -1484,6 +1630,45 @@ final class App
         return $stmt->fetchAll();
     }
 
+    private function exportUrl(string $format, array $filters): string
+    {
+        $query = ['format' => $format];
+        foreach (['status', 'priority', 'category_id', 'assigned_to', 'date_from', 'date_to', 'q', 'open_only'] as $key) {
+            if (($filters[$key] ?? '') !== '') {
+                $query[$key] = (string) $filters[$key];
+            }
+        }
+        return '/admin/export?' . http_build_query($query);
+    }
+
+    private function csvCell(mixed $value): string
+    {
+        $text = (string) $value;
+        return preg_match('/^[=+\-@\t\r]/', $text) ? "'" . $text : $text;
+    }
+
+    private function validWebhookUrl(string $url): bool
+    {
+        if (!filter_var($url, FILTER_VALIDATE_URL)) {
+            return false;
+        }
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        if ($scheme === 'https') {
+            return true;
+        }
+        return $scheme === 'http' && ($this->settings['app_env'] ?? 'production') !== 'production';
+    }
+
+    private function maskedWebhookUrl(string $url): string
+    {
+        $parts = parse_url($url);
+        if (!$parts || !isset($parts['scheme'], $parts['host'])) {
+            return '[ongeldige url]';
+        }
+        $path = isset($parts['path']) && $parts['path'] !== '' ? '/...' : '';
+        return $parts['scheme'] . '://' . $parts['host'] . $path . (isset($parts['query']) ? '?[redacted]' : '');
+    }
+
     private function ticketTable(array $tickets, bool $actions): string
     {
         $rows = '';
@@ -1522,11 +1707,15 @@ final class App
         return '<section class="panel detail"><div><b>Klant</b><span>' . $this->e($ticket['customer_name']) . '<br>' . $this->e($ticket['customer_email']) . '</span></div><div><b>Prioriteit</b><span>' . $this->priority($ticket['priority']) . '</span></div><div><b>Categorie</b><span>' . $this->e($ticket['category_name'] ?? '') . '</span></div><div><b>SLA</b><span>' . $this->sla($ticket) . '</span></div><div class="wide"><b>Omschrijving</b><p>' . nl2br($this->e($ticket['description'])) . '</p></div>' . ($files ? '<div class="wide"><b>Bijlagen</b><ul>' . $files . '</ul></div>' : '') . '</section>';
     }
 
-    private function timeline(int $ticketId, array $replies, bool $showInternal): string
+    private function timeline(int $ticketId, array $replies, bool $showInternal, string $customerToken = ''): string
     {
         $events = [];
         foreach ($this->db->query('SELECT * FROM audit_log WHERE ticket_id = ' . (int) $ticketId . ' ORDER BY created_at') as $a) {
             $events[] = ['time' => $a['created_at'], 'html' => '<div class="event audit"><b>' . $this->e($a['actor_name']) . '</b><span>' . $this->e($a['action']) . '</span><small>' . $this->e($a['created_at']) . '</small></div>'];
+        }
+        foreach ($this->attachments($ticketId, $showInternal) as $a) {
+            $url = '/attachments/' . (int) $a['id'] . ($customerToken !== '' ? '?token=' . $this->e($customerToken) : '');
+            $events[] = ['time' => $a['uploaded_at'], 'html' => '<div class="event attachment"><b>Bijlage</b><span><a href="' . $url . '">' . $this->e($a['filename']) . '</a> (' . round((int) $a['filesize'] / 1024, 1) . ' KB)</span><small>' . $this->e($a['uploaded_at']) . '</small></div>'];
         }
         foreach ($replies as $r) {
             if (!$showInternal && $r['is_internal']) {
@@ -1557,7 +1746,8 @@ final class App
             $nav .= '<a href="/login">Login</a>';
         }
         $nav .= '</div></nav>';
-        $theme = ($_COOKIE['theme'] ?? $this->appSetting('theme_dark', '')) === 'dark' || ($_COOKIE['theme'] ?? '') === 'dark' ? ' class="theme-dark"' : '';
+        $currentTheme = $_COOKIE['theme'] ?? $this->appSetting('theme_dark', '');
+        $theme = ($currentTheme === 'dark' || $currentTheme === '1') ? ' class="theme-dark"' : '';
         $brand = $this->appSetting('theme_brand', '');
         $accent = $this->appSetting('theme_accent', '');
         $style = '';
@@ -1679,6 +1869,20 @@ final class App
         }
     }
 
+    private function columnExists(string $table, string $column): bool
+    {
+        if (!preg_match('/^[a-z0-9_]+$/', $table) || !preg_match('/^[a-z0-9_]+$/', $column)) {
+            return false;
+        }
+        try {
+            $stmt = $this->db->prepare('SHOW COLUMNS FROM `' . $table . '` LIKE ?');
+            $stmt->execute([$column]);
+            return (bool) $stmt->fetchColumn();
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
     private function migrationNotice(string $feature): string
     {
         return '<section class="panel danger"><h1>Migratie vereist</h1><p>De tabellen voor ' . $this->e($feature) . ' ontbreken nog. Voer op de server deze commandos uit:</p><pre><code>php migrate.php
@@ -1755,6 +1959,10 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
             'AD_GROUP_AGENT',
             'AD_GROUP_MANAGER',
             'AD_GROUP_ADMIN',
+            'AD_TLS_REQUIRE_CERT',
+            'AD_TLS_CACERTFILE',
+            'AD_TLS_CACERTDIR',
+            'AD_NETWORK_TIMEOUT',
             'DEFAULT_ADMIN_NAME',
             'DEFAULT_ADMIN_EMAIL',
             'DEFAULT_ADMIN_PASSWORD',
@@ -1823,6 +2031,15 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
     private function safeAudit(string $action, array $details = []): void
     {
         try {
+            $user = $this->currentUser();
+            if ($this->tableExists('system_audit_log')) {
+                $subjectType = isset($details['subject_type']) ? (string) $details['subject_type'] : null;
+                $subjectId = isset($details['subject_id']) ? (string) $details['subject_id'] : null;
+                $actorName = isset($details['actor']) ? mb_substr((string) $details['actor'], 0, 100) : ($user['name'] ?? 'Systeem');
+                unset($details['subject_type'], $details['subject_id']);
+                $this->db->prepare('INSERT INTO system_audit_log (actor_id, actor_name, action, subject_type, subject_id, details, ip_address) VALUES (?, ?, ?, ?, ?, ?, ?)')->execute([$user['id'] ?? null, $actorName, $action, $subjectType, $subjectId, json_encode($details), $this->clientIp()]);
+                return;
+            }
             $ticketId = (int) ($this->db->query('SELECT id FROM tickets ORDER BY id LIMIT 1')->fetchColumn() ?: 0);
             if ($ticketId > 0) {
                 $user = $this->currentUser();
@@ -1843,10 +2060,11 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
         $token = $stmt->fetchColumn();
         if (!$token) {
             $token = bin2hex(random_bytes(32));
-            $this->db->prepare('INSERT INTO csat_surveys (ticket_id, token, sent_at) VALUES (?, ?, NOW())')->execute([$ticketId, $token]);
-        } else {
-            $this->db->prepare('UPDATE csat_surveys SET sent_at = COALESCE(sent_at, NOW()) WHERE token = ?')->execute([$token]);
+            $this->db->prepare('INSERT IGNORE INTO csat_surveys (ticket_id, token, sent_at) VALUES (?, ?, NOW())')->execute([$ticketId, $token]);
+            $stmt->execute([$ticketId]);
+            $token = $stmt->fetchColumn() ?: $token;
         }
+        $this->db->prepare('UPDATE csat_surveys SET sent_at = COALESCE(sent_at, NOW()) WHERE token = ?')->execute([$token]);
         return rtrim((string) $this->settings['app_url'], '/') . '/csat/' . $token;
     }
 
@@ -1909,6 +2127,36 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
         return $pdf . "trailer << /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n{$xref}\n%%EOF";
     }
 
+    private function reportPeriod(): array
+    {
+        $from = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $this->query('date_from')) ? (string) $this->query('date_from') : date('Y-m-01');
+        $to = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $this->query('date_to')) ? (string) $this->query('date_to') : date('Y-m-d');
+        return ['date_from' => $from, 'date_to' => $to];
+    }
+
+    private function timeReportPanel(array $period): string
+    {
+        if (!$this->tableExists('ticket_time_entries')) {
+            return '<section class="panel"><h2>Tijdrapportage</h2><p>Voer `php migrate.php` uit om tijdrapportage te activeren.</p></section>';
+        }
+        $params = [$period['date_from'], $period['date_to']];
+        $agentRows = '';
+        $stmt = $this->db->prepare('SELECT u.name agent, COALESCE(SUM(te.minutes),0) minutes FROM ticket_time_entries te JOIN users u ON u.id = te.user_id WHERE DATE(te.created_at) BETWEEN ? AND ? GROUP BY u.id, u.name ORDER BY minutes DESC');
+        $stmt->execute($params);
+        foreach ($stmt->fetchAll() as $row) {
+            $agentRows .= '<tr><td>' . $this->e($row['agent']) . '</td><td>' . round(((int) $row['minutes']) / 60, 2) . '</td></tr>';
+        }
+
+        $ticketRows = '';
+        $stmt = $this->db->prepare('SELECT t.id, t.ticket_number, t.subject, COALESCE(SUM(te.minutes),0) minutes FROM ticket_time_entries te JOIN tickets t ON t.id = te.ticket_id WHERE DATE(te.created_at) BETWEEN ? AND ? GROUP BY t.id, t.ticket_number, t.subject ORDER BY minutes DESC LIMIT 50');
+        $stmt->execute($params);
+        foreach ($stmt->fetchAll() as $row) {
+            $ticketRows .= '<tr><td><a href="/tickets/' . (int) $row['id'] . '">' . $this->e($row['ticket_number']) . '</a><small>' . $this->e($row['subject']) . '</small></td><td>' . round(((int) $row['minutes']) / 60, 2) . '</td></tr>';
+        }
+
+        return '<section class="report-grid"><div><h2>Tijd per agent</h2><table class="table"><tr><th>Agent</th><th>Uren</th></tr>' . ($agentRows ?: '<tr><td colspan="2">Geen tijd geboekt in deze periode.</td></tr>') . '</table></div><div><h2>Tijd per ticket</h2><table class="table"><tr><th>Ticket</th><th>Uren</th></tr>' . ($ticketRows ?: '<tr><td colspan="2">Geen tijd geboekt in deze periode.</td></tr>') . '</table></div></section>';
+    }
+
     private function uniqueSlug(string $title): string
     {
         $ascii = function_exists('iconv') ? (iconv('UTF-8', 'ASCII//TRANSLIT', $title) ?: $title) : $title;
@@ -1935,51 +2183,87 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
     {
         $ad = $this->settings['ad'] ?? [];
         if (($ad['host'] ?? '') === '' || $password === '' || !function_exists('ldap_connect')) {
+            if (($ad['host'] ?? '') !== '' && !function_exists('ldap_connect')) {
+                $this->lastAdLoginFailure = 'ldap_extension_missing';
+                $this->recordLoginAttempt($email, false, 'ad');
+                $this->safeAudit('ad_login_failed', ['actor' => $email, 'result' => 'ldap_extension_missing', 'subject_type' => 'auth', 'subject_id' => $email]);
+            }
             return null;
         }
         [$ok, $data] = $this->adBindAndSearch($email, $password);
         if (!$ok || !is_array($data)) {
-            $this->safeAudit('ad_login_failed', ['actor' => $email, 'result' => is_string($data) ? $data : 'failed']);
+            $this->lastAdLoginFailure = is_string($data) ? $data : 'failed';
+            $this->recordLoginAttempt($email, false, 'ad');
+            $this->safeAudit('ad_login_failed', ['actor' => $email, 'result' => $this->lastAdLoginFailure, 'subject_type' => 'auth', 'subject_id' => $email]);
             return null;
         }
         $role = $this->adRoleFromGroups($data['groups'] ?? []);
         if ($role === null) {
-            $this->safeAudit('ad_login_failed', ['actor' => $email, 'result' => 'no_group_mapping']);
+            $this->lastAdLoginFailure = 'no_group_mapping';
+            $this->recordLoginAttempt($email, false, 'ad');
+            $this->safeAudit('ad_login_failed', ['actor' => $email, 'result' => 'no_group_mapping', 'subject_type' => 'auth', 'subject_id' => $email]);
             return null;
         }
         $stmt = $this->db->prepare('SELECT * FROM users WHERE email = ?');
         $stmt->execute([$email]);
         $user = $stmt->fetch();
         if ($user) {
-            $this->db->prepare('UPDATE users SET name = ?, role = ?, is_active = 1 WHERE id = ?')->execute([$data['name'] ?: $email, $role, $user['id']]);
+            if (($user['auth_source'] ?? 'local') === 'local') {
+                $this->db->prepare('UPDATE users SET name = ?, is_active = 1, external_auth_id = ? WHERE id = ?')->execute([$data['name'] ?: $email, $data['dn'] ?? null, $user['id']]);
+            } else {
+                $this->db->prepare('UPDATE users SET name = ?, role = ?, is_active = 1, auth_source = "ad", external_auth_id = ? WHERE id = ?')->execute([$data['name'] ?: $email, $role, $data['dn'] ?? null, $user['id']]);
+            }
             $stmt->execute([$email]);
             $user = $stmt->fetch();
         } else {
-            $this->db->prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')->execute([$data['name'] ?: $email, $email, password_hash(bin2hex(random_bytes(20)), PASSWORD_BCRYPT), $role]);
+            $this->db->prepare('INSERT INTO users (name, email, password_hash, auth_source, external_auth_id, role) VALUES (?, ?, ?, "ad", ?, ?)')->execute([$data['name'] ?: $email, $email, password_hash(bin2hex(random_bytes(20)), PASSWORD_BCRYPT), $data['dn'] ?? null, $role]);
             $stmt->execute([$email]);
             $user = $stmt->fetch();
         }
-        $this->safeAudit('ad_login_success', ['actor' => $email, 'role' => $role]);
+        $this->safeAudit('ad_login_success', ['actor' => $email, 'role' => $role, 'subject_type' => 'auth', 'subject_id' => $email]);
         return $user ?: null;
     }
 
     private function adConnectionTest(): array
     {
-        if (!function_exists('ldap_connect')) {
-            return [false, 'ldap_extension_missing'];
-        }
+        $started = hrtime(true);
         $ad = $this->settings['ad'] ?? [];
-        if (($ad['host'] ?? '') === '' || ($ad['bind_dn'] ?? '') === '') {
-            return [false, 'not_configured'];
+        $result = [
+            'host' => (string) ($ad['host'] ?? ''),
+            'latency_ms' => 0,
+            'bind_status' => 'skipped',
+            'search_status' => 'skipped',
+            'error_category' => null,
+        ];
+        if (!function_exists('ldap_connect')) {
+            return $this->finishAdTest($result, $started, 'ldap_extension_missing');
+        }
+        if (($ad['host'] ?? '') === '' || ($ad['bind_dn'] ?? '') === '' || ($ad['base_dn'] ?? '') === '') {
+            return $this->finishAdTest($result, $started, 'not_configured');
         }
         $conn = $this->ldapConnection();
         if (!$conn) {
-            return [false, 'connection_failed'];
+            return $this->finishAdTest($result, $started, 'connection_failed');
         }
         if (!@ldap_bind($conn, (string) $ad['bind_dn'], (string) ($ad['bind_password'] ?? ''))) {
-            return [false, 'bind_failed'];
+            $result['bind_status'] = 'failed';
+            return $this->finishAdTest($result, $started, 'bind_failed');
         }
-        return [true, 'ok'];
+        $result['bind_status'] = 'ok';
+        $search = @ldap_search($conn, (string) $ad['base_dn'], '(objectClass=*)', ['dn'], 0, 1);
+        if (!$search) {
+            $result['search_status'] = 'failed';
+            return $this->finishAdTest($result, $started, 'search_failed');
+        }
+        $result['search_status'] = 'ok';
+        return $this->finishAdTest($result, $started, null);
+    }
+
+    private function finishAdTest(array $result, int $started, ?string $error): array
+    {
+        $result['latency_ms'] = (int) round((hrtime(true) - $started) / 1_000_000);
+        $result['error_category'] = $error;
+        return $result;
     }
 
     private function adBindAndSearch(string $username, string $password): array
@@ -2042,6 +2326,7 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
     private function ldapConnection()
     {
         $ad = $this->settings['ad'] ?? [];
+        $this->applyLdapTlsOptions($ad);
         $scheme = ($ad['use_tls'] ?? 'ldaps') === 'ldaps' ? 'ldaps://' : 'ldap://';
         $conn = @ldap_connect($scheme . (string) ($ad['host'] ?? ''), (int) ($ad['port'] ?? 636));
         if (!$conn) {
@@ -2049,10 +2334,35 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
         }
         ldap_set_option($conn, LDAP_OPT_PROTOCOL_VERSION, 3);
         ldap_set_option($conn, LDAP_OPT_REFERRALS, 0);
+        if (defined('LDAP_OPT_NETWORK_TIMEOUT')) {
+            ldap_set_option($conn, LDAP_OPT_NETWORK_TIMEOUT, max(1, min(60, (int) ($ad['network_timeout'] ?? 5))));
+        }
         if (($ad['use_tls'] ?? '') === 'starttls' && !@ldap_start_tls($conn)) {
             return false;
         }
         return $conn;
+    }
+
+    private function applyLdapTlsOptions(array $ad): void
+    {
+        if (!defined('LDAP_OPT_X_TLS_REQUIRE_CERT')) {
+            return;
+        }
+        $map = [
+            'never' => defined('LDAP_OPT_X_TLS_NEVER') ? LDAP_OPT_X_TLS_NEVER : 0,
+            'allow' => defined('LDAP_OPT_X_TLS_ALLOW') ? LDAP_OPT_X_TLS_ALLOW : 3,
+            'try' => defined('LDAP_OPT_X_TLS_TRY') ? LDAP_OPT_X_TLS_TRY : 4,
+            'demand' => defined('LDAP_OPT_X_TLS_DEMAND') ? LDAP_OPT_X_TLS_DEMAND : 2,
+            'hard' => defined('LDAP_OPT_X_TLS_HARD') ? LDAP_OPT_X_TLS_HARD : 1,
+        ];
+        $mode = strtolower((string) ($ad['tls_require_cert'] ?? 'demand'));
+        ldap_set_option(null, LDAP_OPT_X_TLS_REQUIRE_CERT, $map[$mode] ?? $map['demand']);
+        if (($ad['tls_cacertfile'] ?? '') !== '' && defined('LDAP_OPT_X_TLS_CACERTFILE')) {
+            ldap_set_option(null, LDAP_OPT_X_TLS_CACERTFILE, (string) $ad['tls_cacertfile']);
+        }
+        if (($ad['tls_cacertdir'] ?? '') !== '' && defined('LDAP_OPT_X_TLS_CACERTDIR')) {
+            ldap_set_option(null, LDAP_OPT_X_TLS_CACERTDIR, (string) $ad['tls_cacertdir']);
+        }
     }
 
     private function adRoleFromGroups(array $groups): ?string
@@ -2115,6 +2425,7 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
         $maxStmt->execute(["TKT-{$year}-%"]);
         $initialNext = ((int) $maxStmt->fetchColumn()) + 1;
         $this->db->prepare('INSERT IGNORE INTO ticket_sequences (year, next_number) VALUES (?, ?)')->execute([$year, $initialNext]);
+        $this->db->prepare('UPDATE ticket_sequences SET next_number = GREATEST(next_number, CAST(? AS UNSIGNED)) WHERE year = ?')->execute([$initialNext, $year]);
         $stmt = $this->db->prepare('SELECT next_number FROM ticket_sequences WHERE year = ? FOR UPDATE');
         $stmt->execute([$year]);
         $number = (int) $stmt->fetchColumn();
@@ -2160,6 +2471,16 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
         return $ticket;
     }
 
+    private function ticketFromInboundSubject(string $text): ?array
+    {
+        if (!preg_match('/TKT-\d{4}-\d{6}/', $text, $matches)) {
+            return null;
+        }
+        $stmt = $this->db->prepare('SELECT t.*, c.name category_name, u.name agent_name FROM tickets t JOIN categories c ON c.id=t.category_id LEFT JOIN users u ON u.id=t.assigned_to WHERE t.ticket_number = ?');
+        $stmt->execute([$matches[0]]);
+        return $stmt->fetch() ?: null;
+    }
+
     private function replies(int $ticketId, bool $includeInternal): array
     {
         $sql = 'SELECT * FROM ticket_replies WHERE ticket_id = ?' . ($includeInternal ? '' : ' AND is_internal = 0') . ' ORDER BY created_at';
@@ -2185,6 +2506,13 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
         $stmt = $this->db->prepare('SELECT COUNT(*) FROM categories WHERE id = ? AND is_active = 1');
         $stmt->execute([$id]);
         return (bool) $stmt->fetchColumn();
+    }
+
+    private function validAssignee(int $id): ?array
+    {
+        $stmt = $this->db->prepare('SELECT id, name, email FROM users WHERE id = ? AND is_active = 1 AND role IN ("agent","manager","admin")');
+        $stmt->execute([$id]);
+        return $stmt->fetch() ?: null;
     }
 
     private function countWhere(string $where, array $params = []): int
@@ -2215,7 +2543,8 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
     private function logMail(string $event, string $recipient, string $subject, string $body): void
     {
         [$sent, $error] = $this->deliverMail($recipient, $subject, $body);
-        $this->db->prepare('INSERT INTO mail_log (event_type, recipient, subject, body_html, sent_at, error) VALUES (?, ?, ?, ?, ' . ($sent ? 'NOW()' : 'NULL') . ', ?)')->execute([$event, $recipient, $subject, $body, $error]);
+        $loggedBody = preg_replace('#/csat/[a-f0-9]{64}#', '/csat/[redacted]', $body) ?? $body;
+        $this->db->prepare('INSERT INTO mail_log (event_type, recipient, subject, body_html, sent_at, error) VALUES (?, ?, ?, ?, ' . ($sent ? 'NOW()' : 'NULL') . ', ?)')->execute([$event, $recipient, $subject, $loggedBody, $error]);
     }
 
     private function deliverMail(string $recipient, string $subject, string $body): array
@@ -2279,6 +2608,10 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
             return;
         }
         foreach ($hooks as $hook) {
+            if (!$this->validWebhookUrl((string) $hook['url'])) {
+                $this->db->prepare('INSERT INTO webhook_logs (endpoint_id, event_type, status_code, error) VALUES (?, ?, NULL, ?)')->execute([$hook['id'], $event, 'invalid_webhook_url']);
+                continue;
+            }
             $events = array_map('trim', explode(',', (string) $hook['events']));
             if (!in_array('*', $events, true) && !in_array($event, $events, true)) {
                 continue;
@@ -2307,6 +2640,12 @@ php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_TIMEOUT => 5,
                 ]);
+                if (defined('CURLOPT_PROTOCOLS') && defined('CURLPROTO_HTTP') && defined('CURLPROTO_HTTPS')) {
+                    curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+                }
+                if (defined('CURLOPT_REDIR_PROTOCOLS') && defined('CURLPROTO_HTTP') && defined('CURLPROTO_HTTPS')) {
+                    curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+                }
                 curl_exec($ch);
                 $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: null;
                 $error = curl_error($ch) ?: null;

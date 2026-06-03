@@ -11,7 +11,9 @@ $pdo = new PDO($dsn, $db['username'], $db['password'], [
 ]);
 $pdo->exec('CREATE TABLE IF NOT EXISTS schema_migrations (filename VARCHAR(255) PRIMARY KEY, executed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
 
-foreach (glob(__DIR__ . '/migrations/*.sql') as $migration) {
+$migrations = glob(__DIR__ . '/migrations/*.sql') ?: [];
+sort($migrations, SORT_STRING);
+foreach ($migrations as $migration) {
     $filename = basename($migration);
     $stmt = $pdo->prepare('SELECT COUNT(*) FROM schema_migrations WHERE filename = ?');
     $stmt->execute([$filename]);
