@@ -264,6 +264,10 @@ final class App
 
     private function knowledgeBase(): void
     {
+        if (!$this->tableExists('knowledge_articles')) {
+            $this->layout('Kennisbank', $this->migrationNotice('kennisbank'), false);
+            return;
+        }
         $q = trim((string) $this->query('q'));
         $where = 'WHERE k.is_published = 1';
         $params = [];
@@ -285,6 +289,10 @@ final class App
 
     private function knowledgeArticle(string $slug): void
     {
+        if (!$this->tableExists('knowledge_articles')) {
+            $this->layout('Kennisbank', $this->migrationNotice('kennisbank'), false);
+            return;
+        }
         $stmt = $this->db->prepare('SELECT k.*, c.name category_name FROM knowledge_articles k LEFT JOIN categories c ON c.id = k.category_id WHERE k.slug = ? AND k.is_published = 1');
         $stmt->execute([$slug]);
         $article = $stmt->fetch();
@@ -701,6 +709,10 @@ final class App
     {
         $user = $this->requireMinimumRole('agent');
         $this->verifyCsrf();
+        if (!$this->tableExists('ticket_time_entries')) {
+            $this->layout('Tijdregistratie', $this->migrationNotice('tijdregistratie'));
+            return;
+        }
         $minutes = max(1, (int) ($_POST['minutes'] ?? 0));
         $note = trim((string) ($_POST['note'] ?? ''));
         $this->db->prepare('INSERT INTO ticket_time_entries (ticket_id, user_id, minutes, note) VALUES (?, ?, ?, ?)')->execute([$id, $user['id'], $minutes, $note]);
@@ -710,6 +722,10 @@ final class App
 
     private function csatForm(string $token, array $errors = []): void
     {
+        if (!$this->tableExists('csat_surveys')) {
+            $this->layout('CSAT', $this->migrationNotice('CSAT'), false);
+            return;
+        }
         $survey = $this->csatByToken($token);
         $ticket = $this->ticket((int) $survey['ticket_id']);
         $body = '<section class="auth"><form class="panel" method="post" action="/csat/' . $this->e($token) . '">' . $this->csrf();
@@ -727,6 +743,10 @@ final class App
     private function saveCsat(string $token): void
     {
         $this->verifyCsrf();
+        if (!$this->tableExists('csat_surveys')) {
+            $this->layout('CSAT', $this->migrationNotice('CSAT'), false);
+            return;
+        }
         $survey = $this->csatByToken($token);
         if ($survey['submitted_at']) {
             $this->csatForm($token);
@@ -1017,8 +1037,8 @@ final class App
         $avg = $this->db->query('SELECT AVG(TIMESTAMPDIFF(HOUR, created_at, closed_at)) FROM tickets WHERE closed_at IS NOT NULL')->fetchColumn();
         $avgFirst = $this->db->query('SELECT AVG(TIMESTAMPDIFF(MINUTE, created_at, first_response_at)) / 60 FROM tickets WHERE first_response_at IS NOT NULL')->fetchColumn();
         $slaOk = $this->db->query('SELECT ROUND(100 * SUM(sla_deadline IS NULL OR closed_at IS NULL OR closed_at <= sla_deadline) / GREATEST(COUNT(*),1), 1) FROM tickets')->fetchColumn();
-        $timeTotal = $this->db->query('SELECT COALESCE(SUM(minutes),0) FROM ticket_time_entries')->fetchColumn();
-        $csatAvg = $this->db->query('SELECT AVG(score) FROM csat_surveys WHERE submitted_at IS NOT NULL')->fetchColumn();
+        $timeTotal = $this->tableExists('ticket_time_entries') ? $this->db->query('SELECT COALESCE(SUM(minutes),0) FROM ticket_time_entries')->fetchColumn() : 0;
+        $csatAvg = $this->tableExists('csat_surveys') ? $this->db->query('SELECT AVG(score) FROM csat_surveys WHERE submitted_at IS NOT NULL')->fetchColumn() : 0;
         $rows = '';
         foreach ($this->db->query('SELECT COALESCE(u.name, "Niet toegewezen") agent, COUNT(t.id) total FROM tickets t LEFT JOIN users u ON u.id=t.assigned_to GROUP BY agent ORDER BY total DESC') as $r) {
             $rows .= '<tr><td>' . $this->e($r['agent']) . '</td><td>' . (int) $r['total'] . '</td></tr>';
@@ -1087,6 +1107,10 @@ final class App
     private function adminKnowledge(array $errors = []): void
     {
         $this->requireAdmin();
+        if (!$this->tableExists('knowledge_articles')) {
+            $this->layout('Kennisbankbeheer', $this->migrationNotice('kennisbank'));
+            return;
+        }
         $categories = $this->db->query('SELECT id, name FROM categories ORDER BY name')->fetchAll();
         $rows = '';
         foreach ($this->db->query('SELECT k.*, c.name category_name FROM knowledge_articles k LEFT JOIN categories c ON c.id = k.category_id ORDER BY k.updated_at DESC') as $article) {
@@ -1102,6 +1126,10 @@ final class App
     {
         $this->requireAdmin();
         $this->verifyCsrf();
+        if (!$this->tableExists('knowledge_articles')) {
+            $this->layout('Kennisbankbeheer', $this->migrationNotice('kennisbank'));
+            return;
+        }
         $title = trim((string) ($_POST['title'] ?? ''));
         $body = trim((string) ($_POST['body'] ?? ''));
         if ($title === '' || $body === '') {
@@ -1117,6 +1145,10 @@ final class App
     private function editKnowledge(int $id, array $errors = []): void
     {
         $this->requireAdmin();
+        if (!$this->tableExists('knowledge_articles')) {
+            $this->layout('Kennisbankbeheer', $this->migrationNotice('kennisbank'));
+            return;
+        }
         $stmt = $this->db->prepare('SELECT * FROM knowledge_articles WHERE id = ?');
         $stmt->execute([$id]);
         $article = $stmt->fetch();
@@ -1134,6 +1166,10 @@ final class App
     {
         $this->requireAdmin();
         $this->verifyCsrf();
+        if (!$this->tableExists('knowledge_articles')) {
+            $this->layout('Kennisbankbeheer', $this->migrationNotice('kennisbank'));
+            return;
+        }
         $title = trim((string) ($_POST['title'] ?? ''));
         $body = trim((string) ($_POST['body'] ?? ''));
         if ($title === '' || $body === '') {
@@ -1148,6 +1184,10 @@ final class App
     private function adminWebhooks(array $errors = []): void
     {
         $this->requireAdmin();
+        if (!$this->tableExists('webhook_endpoints')) {
+            $this->layout('Webhooks', $this->migrationNotice('webhooks'));
+            return;
+        }
         $rows = '';
         foreach ($this->db->query('SELECT * FROM webhook_endpoints ORDER BY created_at DESC') as $hook) {
             $rows .= '<tr><td>' . $this->e($hook['name']) . '<small>' . $this->e($hook['url']) . '</small></td><td>' . $this->e($hook['events']) . '</td><td>' . ($hook['is_active'] ? 'Actief' : 'Uit') . '</td><td><form method="post" action="/admin/webhooks/' . (int) $hook['id'] . '/toggle">' . $this->csrf() . '<button class="button secondary">Toggle</button></form></td></tr>';
@@ -1162,6 +1202,10 @@ final class App
     {
         $this->requireAdmin();
         $this->verifyCsrf();
+        if (!$this->tableExists('webhook_endpoints')) {
+            $this->layout('Webhooks', $this->migrationNotice('webhooks'));
+            return;
+        }
         $name = trim((string) ($_POST['name'] ?? ''));
         $url = trim((string) ($_POST['url'] ?? ''));
         if ($name === '' || !filter_var($url, FILTER_VALIDATE_URL)) {
@@ -1176,6 +1220,10 @@ final class App
     {
         $this->requireAdmin();
         $this->verifyCsrf();
+        if (!$this->tableExists('webhook_endpoints')) {
+            $this->layout('Webhooks', $this->migrationNotice('webhooks'));
+            return;
+        }
         $this->db->prepare('UPDATE webhook_endpoints SET is_active = 1 - is_active WHERE id = ?')->execute([$id]);
         $this->redirect('/admin/webhooks');
     }
@@ -1617,6 +1665,26 @@ final class App
         return is_string($value) ? trim($value) : null;
     }
 
+    private function tableExists(string $table): bool
+    {
+        if (!preg_match('/^[a-z0-9_]+$/', $table)) {
+            return false;
+        }
+        try {
+            $stmt = $this->db->prepare('SHOW TABLES LIKE ?');
+            $stmt->execute([$table]);
+            return (bool) $stmt->fetchColumn();
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    private function migrationNotice(string $feature): string
+    {
+        return '<section class="panel danger"><h1>Migratie vereist</h1><p>De tabellen voor ' . $this->e($feature) . ' ontbreken nog. Voer op de server deze commandos uit:</p><pre><code>php migrate.php
+php seed.php</code></pre><p>Ververs daarna deze pagina.</p></section>';
+    }
+
     private function readEnvFile(): array
     {
         $path = dirname(__DIR__) . '/.env';
@@ -1767,6 +1835,9 @@ final class App
 
     private function ensureCsatSurvey(int $ticketId): string
     {
+        if (!$this->tableExists('csat_surveys')) {
+            return '';
+        }
         $stmt = $this->db->prepare('SELECT token FROM csat_surveys WHERE ticket_id = ? LIMIT 1');
         $stmt->execute([$ticketId]);
         $token = $stmt->fetchColumn();
@@ -1792,6 +1863,9 @@ final class App
 
     private function timeEntriesPanel(int $ticketId): string
     {
+        if (!$this->tableExists('ticket_time_entries')) {
+            return '<section class="panel"><h2>Tijdregistratie</h2><p>Voer `php migrate.php` uit om tijdregistratie te activeren.</p></section>';
+        }
         $rows = '';
         $total = 0;
         $stmt = $this->db->prepare('SELECT te.*, u.name user_name FROM ticket_time_entries te JOIN users u ON u.id = te.user_id WHERE te.ticket_id = ? ORDER BY te.created_at DESC');
