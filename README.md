@@ -1,60 +1,60 @@
-# Ticket Systeem MVP
+# Ticket Systeem
 
-Zelfgehost ticket- en helpdesksysteem voor kleine teams. Het MVP is bedoeld voor een standaard LAMP/LEMP-server met PHP, MySQL/MariaDB en SMTP voor notificaties.
-
-> Status: MVP-documentatie op basis van de PRD en de aanwezige installatiebestanden. Controleer bij verdere implementatie of nieuwe routes, scripts en configuratie ook in de documentatie worden bijgewerkt.
+Zelfgehost ticket- en helpdesksysteem voor kleine teams. De applicatie draait zonder framework op PHP, MySQL/MariaDB en SMTP en bevat het MVP plus P1-functies zoals kennisbank, bulkacties, CSAT, exports, webhooks, thema-instellingen, IMAP-intake en AD/LDAPS-login.
 
 ## Vereisten
 
-- PHP 8.2 of hoger, aanbevolen PHP 8.3
-- PHP-extensies: `pdo_mysql`, `mbstring`, `fileinfo`, `openssl`, `curl`
+- PHP 8.2 of hoger
+- PHP-extensies verplicht: `pdo_mysql`, `mbstring`, `fileinfo`, `openssl`, `curl`
+- PHP-extensies optioneel: `imap` voor e-mailintake, `ldap` voor AD/LDAPS
 - MySQL 8.0 of MariaDB 10.6 of hoger
 - Composer 2.x
 - Nginx of Apache 2.4
-- SMTP-account voor uitgaande e-mail
 - Schrijfrechten op `storage/`
+- SMTP-account voor uitgaande e-mail
 
-## Installatie in het kort
+## Snelle Installatie Met Docker
 
-```bash
-composer install --no-dev
-composer install-wizard
-```
-
-Op een ontwikkelmachine zonder Composer kunnen de scripts ook direct worden gestart:
-
-```bash
-php install.php
-php migrate.php
-php seed.php
-php sla_check.php
-php retention_cleanup.php
-php -S 127.0.0.1:8080 -t public
-```
-
-Optionele webinstaller: open `/install` zolang `.installed` nog niet bestaat.
-
-Docker-demo:
-
-```bash
+```powershell
 docker compose up -d --build
 docker compose exec app php migrate.php
 docker compose exec app php seed.php
 ```
 
-De Docker-app draait dan op `http://127.0.0.1:8081`.
+Open daarna:
 
-Rooktest uitvoeren nadat MySQL, migraties, seed en de PHP-server draaien:
-
-```powershell
-.\scripts\smoke-test.ps1
+```text
+http://127.0.0.1:8081
 ```
 
-Vul voor het migreren eerst de database- en SMTP-instellingen in `.env` in. Zie [docs/installatiegids.md](docs/installatiegids.md) voor de volledige installatiegids.
+Rooktest:
 
-## Belangrijke configuratie
+```powershell
+.\scripts\smoke-test.ps1 -BaseUrl http://127.0.0.1:8081
+```
 
-Minimale `.env`-waarden:
+## Handmatige Installatie
+
+1. Clone de repository.
+
+```bash
+git clone https://github.com/Mikearcando/ticket.git
+cd ticket
+```
+
+2. Installeer dependencies.
+
+```bash
+composer install --no-dev
+```
+
+3. Maak `.env`.
+
+```bash
+cp .env.example .env
+```
+
+4. Vul minimaal deze waarden in `.env`.
 
 ```dotenv
 APP_NAME="Ticket Systeem"
@@ -74,58 +74,144 @@ SMTP_PORT=587
 SMTP_USERNAME=smtp-user
 SMTP_PASSWORD=smtp-wachtwoord
 SMTP_ENCRYPTION=tls
-```
 
-## Eerste admin-login
-
-Na `composer seed` hoort er een eerste admin-account beschikbaar te zijn. Gebruik bij voorkeur een eenmalig wachtwoord dat tijdens het seeden wordt getoond, of stel vooraf deze waarden in `.env` in:
-
-```dotenv
-DEFAULT_ADMIN_NAME="Beheerder"
+DEFAULT_ADMIN_NAME=Admin
 DEFAULT_ADMIN_EMAIL=admin@example.nl
-DEFAULT_ADMIN_PASSWORD="tijdelijk-sterk-wachtwoord"
+DEFAULT_ADMIN_PASSWORD=ChangeMe123!
 ```
 
-Log daarna in via:
+5. Migreer en seed de database.
+
+```bash
+php migrate.php
+php seed.php
+```
+
+6. Start lokaal een ontwikkelserver.
+
+```bash
+php -S 127.0.0.1:8080 -t public
+```
+
+Open:
+
+```text
+http://127.0.0.1:8080
+```
+
+## Eerste Login
+
+Log in via:
 
 ```text
 /login
 ```
 
-Wijzig het tijdelijke wachtwoord direct na de eerste login.
+Gebruik `DEFAULT_ADMIN_EMAIL` en `DEFAULT_ADMIN_PASSWORD` uit `.env`. Wijzig het tijdelijke wachtwoord direct via `/profile`.
 
-## Basisgebruik
+## Belangrijke Routes
 
-- Klanten maken zonder account een ticket aan via `/`.
-- Het systeem mailt een bevestiging met ticketnummer en klantlink.
-- Agents en admins loggen in via `/login`.
-- Agents verwerken tickets via `/dashboard`, `/tickets` en de ticketdetailpagina.
-- Admins beheren gebruikers, categorieen, SLA-instellingen en e-mailsjablonen via `/admin/...`.
+- `/` selfserviceportaal en ticketaanmaak
+- `/knowledge-base` publieke kennisbank
+- `/login` lokale of AD-login
+- `/ad/password` AD-wachtwoord wijzigen
+- `/dashboard` dashboard
+- `/tickets` ticketoverzicht met filters en bulkacties
+- `/tickets/new` snelle ticketaanmaak voor ingelogde gebruikers
+- `/admin/users` gebruikers en rollen
+- `/admin/categories` categorieen
+- `/admin/sla` SLA-instellingen
+- `/admin/templates` e-mailsjablonen
+- `/admin/reports` rapportages met CSV/PDF-export
+- `/admin/audit` auditlog
+- `/admin/config` runtimeconfig, SMTP, IMAP, AD/LDAPS en thema
+- `/admin/knowledge-base` kennisbankbeheer
+- `/admin/webhooks` webhookbeheer
 
-Zie [docs/admin-handleiding.md](docs/admin-handleiding.md) voor het dagelijkse beheer.
+## P1-Functies
 
-## Mappen
+- Kennisbank/FAQ gekoppeld aan categorieen.
+- Bulkacties op tickets: status wijzigen en toewijzen.
+- Tijdregistratie per ticket.
+- CSAT-link na sluiten van een ticket.
+- CSV/PDF-export via rapportages.
+- Webhooks voor Teams, Slack of eigen endpoints.
+- Darkmode en basisthema via `/admin/config`.
+- IMAP-intake via `php imap_intake.php`.
+- AD/LDAPS-login, group-role mapping, connectietest en wachtwoord wijzigen.
 
-- `public/`: webroot en front controller
-- `config/`: applicatieconfiguratie
-- `deploy/`: voorbeeldconfiguratie voor Nginx, Apache en cron
-- `src/`: PHP-code
-- `migrations/`: database-migraties
-- `storage/attachments/`: bijlagen, bij voorkeur buiten publieke toegang
-- `docs/`: beheer- en installatiehandleidingen
+## IMAP-Intake
 
-## Deployment-checklist
+Zet deze waarden in `.env` of via `/admin/config`:
+
+```dotenv
+IMAP_MAILBOX="{imap.example.nl:993/imap/ssl}INBOX"
+IMAP_USERNAME=support@example.nl
+IMAP_PASSWORD=imap-wachtwoord
+IMAP_DEFAULT_CATEGORY_ID=1
+```
+
+Handmatig draaien:
+
+```bash
+php imap_intake.php
+```
+
+Cronvoorbeeld:
+
+```cron
+*/5 * * * * cd /var/www/ticket && php imap_intake.php
+```
+
+## AD/LDAPS
+
+Installeer de PHP LDAP-extensie en configureer:
+
+```dotenv
+AD_HOST=dc01.example.local
+AD_PORT=636
+AD_USE_TLS=ldaps
+AD_BASE_DN="DC=example,DC=local"
+AD_BIND_DN="CN=svc-ticket,OU=Service Accounts,DC=example,DC=local"
+AD_BIND_PASSWORD=sterk-service-wachtwoord
+AD_USER_FILTER="(&(objectClass=user)(sAMAccountName={username}))"
+AD_GROUP_VIEWER="CN=Ticket Viewers,OU=Groups,DC=example,DC=local"
+AD_GROUP_AGENT="CN=Ticket Agents,OU=Groups,DC=example,DC=local"
+AD_GROUP_MANAGER="CN=Ticket Managers,OU=Groups,DC=example,DC=local"
+AD_GROUP_ADMIN="CN=Ticket Admins,OU=Groups,DC=example,DC=local"
+```
+
+Test de verbinding via `/admin/config`. Lokale admin-login blijft beschikbaar als fallback.
+
+## Onderhoud
+
+```bash
+php sla_check.php
+php retention_cleanup.php
+php smtp_test.php ontvanger@example.nl
+php imap_intake.php
+```
+
+Aanbevolen cron:
+
+```cron
+*/15 * * * * cd /var/www/ticket && php sla_check.php
+*/5 * * * * cd /var/www/ticket && php imap_intake.php
+0 3 * * * cd /var/www/ticket && php retention_cleanup.php
+```
+
+## Deployment-Checklist
 
 - `.env` is ingevuld en niet publiek toegankelijk.
-- `APP_ENV=production` in productie.
+- `APP_ENV=production`.
+- HTTPS is actief.
 - Databasegebruiker heeft alleen rechten op de applicatiedatabase.
-- SMTP is getest met SPF/DKIM voor het verzenddomein.
 - `storage/` is schrijfbaar door de webservergebruiker.
 - `storage/attachments/` is niet rechtstreeks browsebaar.
-- HTTPS is actief.
+- SMTP is getest.
 - Eerste admin-wachtwoord is gewijzigd.
-- Cronjob voor `php sla_check.php` draait bijvoorbeeld elke 15 minuten.
-- Cronjob voor `php retention_cleanup.php` draait dagelijks.
+- Cronjobs voor SLA, retentie en optioneel IMAP draaien.
+- Voor AD-wachtwoordmutaties wordt LDAPS of StartTLS gebruikt.
 
 ## Documentatie
 

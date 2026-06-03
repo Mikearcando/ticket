@@ -1,5 +1,5 @@
 # PRD – Ticket Systeem (Helpdesk / Support)
-**Versie:** 1.0  
+**Versie:** 1.1
 **Datum:** 2 juni 2026  
 **Auteur:** Projectteam  
 **Status:** Concept  
@@ -36,7 +36,6 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 | NG3 | Mobiele native app (iOS/Android) | Responsive webinterface volstaat |
 | NG4 | AI-suggesties voor ticketoplossingen | Post-MVP feature |
 | NG5 | Betaaldkoppeling / facturatiemodule | Aparte scope; verwijzing naar webshop-template |
-| NG6 | LDAP / Active Directory SSO | Fase 2 na marktvalidatie |
 
 ---
 
@@ -46,9 +45,11 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 
 | Rol | Omschrijving | Rechten |
 |-----|-------------|---------|
-| **Klant (Guest/Customer)** | Eindgebruiker die een verzoek indient | Ticket aanmaken, eigen tickets inzien, reageren |
-| **Agent** | Medewerker die tickets verwerkt | Tickets beheren, toewijzen, sluiten, reageren |
-| **Admin** | Systeembeheerder | Alles + gebruikersbeheer, categorieën, SLA-instellingen, rapportages |
+| **Klant (Guest/Customer)** | Eindgebruiker die een verzoek indient via het selfserviceportaal | Ticket aanmaken, eigen tickets inzien en reageren via tokenlink |
+| **Viewer** | Interne lezer, auditor of servicedeskmedewerker in opleiding | Tickets, tijdlijn en bijlagen bekijken; geen wijzigingen uitvoeren |
+| **Agent** | Medewerker die tickets verwerkt | Tickets behandelen, toewijzen, status wijzigen, reageren en interne notities plaatsen |
+| **Manager** | Teamlead of serviceverantwoordelijke | Alles van agent + rapportages, auditlog en runtimeconfiguratie zonder secrets bekijken |
+| **Admin** | Systeembeheerder | Alles van manager + gebruikers, rollen, categorieën, SLA-instellingen, e-mailsjablonen en integratieconfiguratie beheren |
 
 ### 4.2 User Stories
 
@@ -65,12 +66,17 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 - Wil ik de status in één klik kunnen wijzigen (open / in behandeling / wachtend / gesloten) zodat de administratie minimale tijd kost.
 - Wil ik bijlagen kunnen uploaden en inzien zodat screenshots of logbestanden snel gedeeld kunnen worden.
 
+**Als manager:**
+- Wil ik rapportages, SLA-prestaties en auditlogregels kunnen bekijken zonder systeeminstellingen te wijzigen zodat ik operationeel kan sturen.
+- Wil ik runtimeconfiguratie kunnen controleren zonder wachtwoorden of tokens te zien zodat ik beheerproblemen kan diagnosticeren.
+
 **Als admin:**
-- Wil ik agents en klantaccounts kunnen aanmaken, bewerken en deactiveren zodat ik volledige controle heb over toegang.
+- Wil ik interne gebruikers kunnen aanmaken, bewerken, deactiveren en rollen kunnen toewijzen zodat ik volledige controle heb over toegang.
 - Wil ik categorieën en prioriteiten kunnen configureren zodat het systeem aansluit op onze werkprocessen.
 - Wil ik SLA-tijden per prioriteit instellen (bijv. hoog = 4 uur responstijd) zodat escalaties automatisch getriggerd worden.
 - Wil ik een dashboard zien met KPI's (open tickets, gemiddelde doorlooptijd, tickets per agent) zodat ik de servicekwaliteit kan monitoren.
 - Wil ik e-mailsjablonen kunnen aanpassen zodat notificaties onze huisstijl volgen.
+- Wil ik AD/LDAPS-instellingen kunnen configureren en testen zonder secrets zichtbaar te maken zodat domeingebruikers veilig kunnen inloggen.
 
 ---
 
@@ -87,8 +93,8 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 | F03 | Statusworkflow | Statussen: `nieuw → open → in_behandeling → wachtend_op_klant → opgelost → gesloten`; alleen geldige transities toegestaan |
 | F04 | Prioriteiten | Vier niveaus: `laag / normaal / hoog / kritiek`; default = normaal |
 | F05 | Categorieën | Admin configureert categorieën (bijv. Hardware, Software, Netwerk, Overig); min. 1 verplicht bij aanmaak |
-| F06 | Toewijzing aan agent | Admin/agent kan ticket toewijzen aan een specifieke agent; notificatie aan toegewezen agent |
-| F07 | Reacties (threaded) | Publieke reacties zichtbaar voor klant én agent; interne notities alleen zichtbaar voor agents/admins |
+| F06 | Toewijzing aan agent | Agent, manager of admin kan ticket toewijzen aan een specifieke behandelaar; notificatie aan toegewezen behandelaar |
+| F07 | Reacties (threaded) | Publieke reacties zichtbaar voor klant én interne gebruikers; interne notities alleen zichtbaar voor interne gebruikers |
 | F08 | Bijlagebeheer | Upload van PNG/JPG/PDF/ZIP/LOG tot 10 MB; opgeslagen in `/storage/attachments/` |
 | F09 | E-mailnotificaties | Triggers: ticket aangemaakt, status gewijzigd, nieuwe reactie, SLA-waarschuwing; verzonden via SMTP (configureerbaar) |
 | F10 | Klantportaal | Klant opent ticket via unieke link in e-mail; kan reageren en status inzien zonder account |
@@ -97,19 +103,20 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 
 | ID | Requirement | Acceptatiecriteria |
 |----|------------|-------------------|
-| U01 | Inloggen voor agents en admins | E-mail + wachtwoord; bcrypt hashing; sessie via PHP session of JWT |
-| U02 | Roltoewijzing | Admin kent rol toe: `agent` of `admin`; klanten hebben geen account (guest-flow) |
+| U01 | Inloggen voor interne gebruikers | E-mail + wachtwoord; bcrypt hashing; sessie via PHP session; rollen: `viewer`, `agent`, `manager`, `admin` |
+| U02 | Roltoewijzing | Admin kent rol toe: `viewer`, `agent`, `manager` of `admin`; klanten gebruiken standaard de guest-flow zonder account |
 | U03 | Wachtwoordherstel | Reset via e-maillink (token geldig 60 minuten) |
-| U04 | Profielbeheer | Agent kan naam, wachtwoord en notificatievoorkeuren aanpassen |
+| U04 | Profielbeheer | Interne gebruiker kan naam, wachtwoord en notificatievoorkeuren aanpassen, tenzij authenticatie extern door AD wordt afgedwongen |
+| U05 | Lokale break-glass admin | Minimaal één actieve lokale admin blijft mogelijk en kan niet per ongeluk worden gedeactiveerd of gedegradeerd |
 
 #### 5.1.3 Dashboard & Overzichten
 
 | ID | Requirement | Acceptatiecriteria |
 |----|------------|-------------------|
 | D01 | Agent dashboard | Kolommen: mijn open tickets, onbehandeld, wachtend op klant; sorteer op prioriteit en aanmaakdatum |
-| D02 | Admin dashboard | KPI-kaarten: totaal open, gemiddelde reactietijd (uren), tickets per agent, SLA-naleving (%) |
-| D03 | Ticketoverzicht (lijstweergave) | Filterbaar op: status, prioriteit, categorie, agent, datum; zoekfunctie op ticketnummer + trefwoord |
-| D04 | Ticketdetailpagina | Volledig ticket met tijdlijn van reacties, statuswijzigingen, bijlagen en interne notities |
+| D02 | Manager/admin dashboard | KPI-kaarten: totaal open, gemiddelde reactietijd (uren), tickets per agent, SLA-naleving (%) |
+| D03 | Ticketoverzicht (lijstweergave) | Filterbaar op: status, prioriteit, categorie, agent, datum; zoekfunctie op ticketnummer + trefwoord; viewer kan alleen lezen |
+| D04 | Ticketdetailpagina | Volledig ticket met tijdlijn van reacties, statuswijzigingen, bijlagen en interne notities; behandelacties alleen vanaf agentrol |
 
 #### 5.1.4 SLA-beheer
 
@@ -121,18 +128,22 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 
 ---
 
-### 5.2 Nice-to-Have (P1)
+### 5.2 Praktische Uitbreidingen (P1)
 
-| ID | Requirement |
-|----|------------|
-| P101 | Bulk-acties in ticketoverzicht (meerdere tickets tegelijk status wijzigen / toewijzen) |
-| P102 | E-mailintake: inkomende e-mails naar een mailbox worden automatisch omgezet naar ticket (IMAP polling) |
-| P103 | Kennisbank / FAQ-module gekoppeld aan categorieën |
-| P104 | Tijdregistratie per ticket (uren gelogd door agent) |
-| P105 | Tevredenheidsscore (CSAT) na sluiting via e-maillink |
-| P106 | Exportfunctie (CSV/PDF) van ticketoverzichten |
-| P107 | Webhook-ondersteuning bij statuswijziging (voor integratie met Slack, Teams etc.) |
-| P108 | Darkmode / themewisseling via CSS-variabelen |
+| ID | Requirement | Acceptatiecriteria |
+|----|------------|-------------------|
+| P101 | Bulk-acties in ticketoverzicht | Agent kan meerdere tickets tegelijk status wijzigen of toewijzen; auditlog registreert per ticket de uitgevoerde actie |
+| P102 | E-mailintake via IMAP | Inkomende e-mails uit een configureerbare mailbox worden periodiek omgezet naar tickets of reacties; duplicate detection op message-id |
+| P103 | Kennisbank / FAQ gekoppeld aan categorieën | Admin beheert artikelen; publiek selfserviceportaal toont relevante FAQ-artikelen per categorie |
+| P104 | Tijdregistratie per ticket | Agent kan bestede tijd registreren; manager/admin kan totalen per ticket, agent en periode rapporteren |
+| P105 | Tevredenheidsscore (CSAT) na sluiting | Klant ontvangt na sluiten een CSAT-link; score wordt aan ticket gekoppeld zonder openbaar te zijn |
+| P106 | CSV/PDF exports | Manager/admin exporteert ticketoverzichten en rapportages met actieve filters; exports bevatten geen secrets of wachtwoorddata |
+| P107 | Webhooks voor Teams/Slack | Admin configureert webhook-URL's per event; systeem logt resultaat zonder payload met persoonsgegevens onnodig te dupliceren |
+| P108 | Darkmode en thema-instellingen | Gebruiker kan darkmode kiezen; admin kan basiskleuren instellen zonder buildstap |
+| P109 | AD/LDAPS verbinding configureren via admin/config | Admin kan AD-instellingen beheren of controleren; wachtwoorden worden gemaskeerd en niet teruggegeven in HTML, logs of screenshots |
+| P110 | AD-login voor agents/managers/admins | Domeingebruiker kan inloggen via AD; group-role mapping bepaalt rol; lokaal account blijft fallback wanneer AD niet beschikbaar is of gebruiker lokaal bestaat |
+| P111 | AD password reset/change selfservice | Geautoriseerde domeingebruiker kan wachtwoord wijzigen/resetten via LDAPS of StartTLS; zwakke wachtwoorden tonen alleen veilige foutcategorie |
+| P112 | AD-connectietest vanuit beheeromgeving | Admin kan bind/search testen; resultaat toont status, latency en foutcategorie zonder `AD_BIND_PASSWORD` of ingevoerd wachtwoord te tonen |
 
 ---
 
@@ -142,10 +153,49 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 |----|------|
 | P201 | Multi-language support (NL/EN/DE) via i18n |
 | P202 | REST API voor externe integraties |
-| P203 | SSO / LDAP-koppeling |
+| P203 | Uitgebreide SSO naast klassieke AD, bijvoorbeeld SAML/OIDC/Entra ID |
 | P204 | AI-gestuurde ticketclassificatie en suggesties |
 | P205 | White-label theming per klantinstallatie |
-| P206 | SLA-rapportage export naar PDF |
+| P206 | Geavanceerde SLA-rapportage en periodieke PDF-mailing |
+| P207 | Klantaccounts naast token-only klantportaal |
+
+---
+
+### 5.4 AD/LDAPS Specificatie (P1)
+
+**Scope:** klassieke Windows Active Directory via LDAPS of StartTLS. Microsoft Entra ID, SAML en OIDC vallen buiten deze AD-specificatie en staan op P2.
+
+**Minimale configuratievelden:**
+- `AD_HOST`: hostnaam of IP van domain controller.
+- `AD_PORT`: standaard 636 voor LDAPS of 389 met StartTLS.
+- `AD_USE_TLS`: `ldaps` of `starttls`; wachtwoordmutaties vereisen een versleutelde verbinding.
+- `AD_BASE_DN`: zoekbasis, bijvoorbeeld `DC=example,DC=local`.
+- `AD_BIND_DN`: serviceaccount of bind-user voor zoekacties.
+- `AD_BIND_PASSWORD`: secret uit `.env` of deployment secret store; nooit zichtbaar in beheer-UI.
+- `AD_USER_FILTER`: filtertemplate, bijvoorbeeld `(&(objectClass=user)(sAMAccountName={username}))`.
+- Optionele group-role mapping: AD-groep-DN naar `viewer`, `agent`, `manager` of `admin`.
+
+**Role mapping en fallback:**
+- AD-groepen worden in volgorde van hoogste privilege naar laagste privilege gemapt naar `admin`, `manager`, `agent`, `viewer`.
+- Een gebruiker zonder match krijgt geen interne toegang, tenzij er een actief lokaal account met expliciete rol bestaat.
+- Lokale admin blijft altijd mogelijk als break-glass account, ook als AD uitvalt of verkeerd is geconfigureerd.
+- Lokale login fallback mag niet stilzwijgend AD-fouten verbergen in auditlog; beheer moet kunnen zien dat fallback is gebruikt.
+
+**Password reset/change:**
+- Gebruiker identificeert zich met domeinaccount en doorloopt de geconfigureerde verificatiestap.
+- Systeem valideert wachtwoordbeleid via AD response; UI toont alleen veilige categorieën zoals `policy_violation`, `expired_token`, `not_allowed` of `directory_unavailable`.
+- Nieuw wachtwoord wordt nooit gelogd, nooit per e-mail verzonden en niet opgeslagen in de applicatiedatabase.
+- Auditlog registreert alleen actor, tijdstip, resultaat en foutcategorie.
+- Reset/change werkt uitsluitend over LDAPS of StartTLS; bij plaintext LDAP wordt de actie geblokkeerd.
+
+**Acceptatiecriteria:**
+- Succesvolle AD-connectietest toont `ok`, servernaam/host, latency en bind/search-status zonder secrets.
+- Mislukte AD-bind toont veilige foutcategorie en lekt geen `AD_BIND_PASSWORD`, gebruikerswachtwoord of volledige stacktrace.
+- AD-login kent de juiste applicatierol toe op basis van group mapping en schrijft een auditlogregel.
+- AD-login zonder group mapping weigert toegang of gebruikt alleen een expliciet lokaal actief account.
+- Lokale login fallback werkt voor bestaande lokale gebruikers wanneer AD onbereikbaar is.
+- AD password reset/change met ongeldig of te zwak wachtwoord faalt zonder het nieuwe wachtwoord te loggen.
+- Auditlog bevat AD-events zoals `ad_login_success`, `ad_login_failed`, `ad_password_change_success`, `ad_password_change_failed` en `ad_connection_test`.
 
 ---
 
@@ -161,6 +211,9 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 | **Dataretentie** | Gesloten tickets bewaard conform AVG (minimaal 1 jaar, configureerbaar) |
 | **Toegankelijkheid** | WCAG 2.1 AA voor publiek klantformulier |
 | **Logging** | Alle statuswijzigingen gelogd in `audit_log`-tabel met timestamp en actor |
+| **Secret management** | Secrets staan uitsluitend in `.env` of deployment secret store; beheer-UI, exports, screenshots, `mail_log`, `audit_log` en foutmeldingen tonen nooit wachtwoorden of tokens |
+| **Directory security** | AD-wachtwoordmutaties zijn alleen toegestaan via LDAPS of StartTLS; certificaatvalidatie moet configureerbaar en standaard ingeschakeld zijn |
+| **Authenticatie fallback** | Lokale admin-login blijft beschikbaar voor break-glass beheer; fallback-gebruik wordt gelogd zonder AD- of wachtwoorddetails |
 
 ---
 
@@ -175,7 +228,7 @@ Kleine en middelgrote bedrijven (MKB) in Nederland missen een eenvoudig, zelfgeh
 | Database | MySQL 8 / MariaDB 10.6 | Bewezen stabiel; breed gehost |
 | Frontend | Vanilla JS + CSS (geen framework) | Geen build-pipeline; laag onderhoud |
 | E-mail | PHPMailer + SMTP | Betrouwbaar; configureerbaar |
-| Authenticatie | PHP Sessions + bcrypt | Eenvoudig; geen JWT-overhead voor v1 |
+| Authenticatie | PHP Sessions + bcrypt; P1 AD/LDAPS | Eenvoudig lokaal beheer met uitbreidbare directory-authenticatie |
 | File storage | Lokaal bestandssysteem (`/storage/`) | Geen S3-afhankelijkheid; migreerbaar |
 | Webserver | Nginx (aanbevolen) of Apache + .htaccess | Standaard hosting |
 
@@ -221,13 +274,13 @@ attachments
   mime_type       VARCHAR(100)
   uploaded_at     DATETIME
 
--- Gebruikers (agents + admins)
+-- Gebruikers (interne accounts)
 users
   id              INT AUTO_INCREMENT PK
   name            VARCHAR(100)
   email           VARCHAR(150) UNIQUE
   password_hash   VARCHAR(255)
-  role            ENUM('agent','admin')
+  role            ENUM('viewer','agent','manager','admin')
   is_active       TINYINT(1) DEFAULT 1
   created_at      DATETIME
   last_login      DATETIME NULL
@@ -263,6 +316,15 @@ email_templates
   subject         VARCHAR(255)
   body_html       TEXT
   updated_at      DATETIME
+
+-- P1: AD/LDAPS group mapping (secrets blijven in .env/deployment secrets)
+ad_group_role_mappings
+  id              INT AUTO_INCREMENT PK
+  group_dn        VARCHAR(500)
+  role            ENUM('viewer','agent','manager','admin')
+  priority        INT DEFAULT 100             -- laag getal wint bij meerdere matches
+  is_active       TINYINT(1) DEFAULT 1
+  created_at      DATETIME
 ```
 
 ### 7.3 Mapstructuur
@@ -329,21 +391,26 @@ email_templates
 
 | Route | Doel | Toegang |
 |-------|------|---------|
-| `GET /` | Publiek ticketformulier | Iedereen |
+| `GET /` | Selfserviceportaal met ticket aanmaken en ticket volgen | Iedereen |
 | `POST /ticket` | Ticket aanmaken | Iedereen |
 | `GET /ticket/{token}` | Klantportaal (ticket inzien/reageren) | Via unieke token in e-mail |
-| `GET /login` | Inlogpagina agents/admins | Iedereen |
-| `GET /dashboard` | Agent-dashboard | Agent, Admin |
-| `GET /tickets` | Ticketoverzicht (lijstweergave) | Agent, Admin |
-| `GET /tickets/{id}` | Ticketdetailpagina | Agent, Admin |
-| `POST /tickets/{id}/reply` | Reactie toevoegen | Agent, Admin |
-| `PATCH /tickets/{id}/status` | Status wijzigen | Agent, Admin |
-| `PATCH /tickets/{id}/assign` | Toewijzen | Agent, Admin |
+| `GET /tickets/new` | Snelle ticketaanmaak voor ingelogde gebruikers | Viewer, Agent, Manager, Admin |
+| `GET /login` | Inlogpagina interne gebruikers; P1 ook AD-login | Iedereen |
+| `GET /password/forgot` | Lokaal wachtwoordherstel | Iedereen |
+| `GET /ad/password` | P1 AD password reset/change selfservice | Geautoriseerde domeingebruiker |
+| `GET /dashboard` | Dashboard | Viewer, Agent, Manager, Admin |
+| `GET /tickets` | Ticketoverzicht (lijstweergave) | Viewer, Agent, Manager, Admin |
+| `GET /tickets/{id}` | Ticketdetailpagina | Viewer, Agent, Manager, Admin |
+| `POST /tickets/{id}/reply` | Reactie toevoegen | Agent, Manager, Admin |
+| `PATCH /tickets/{id}/status` | Status wijzigen | Agent, Manager, Admin |
+| `PATCH /tickets/{id}/assign` | Toewijzen | Agent, Manager, Admin |
 | `GET /admin/users` | Gebruikersbeheer | Admin |
 | `GET /admin/categories` | Categoriebeheer | Admin |
 | `GET /admin/sla` | SLA-instellingen | Admin |
 | `GET /admin/templates` | E-mailsjablonen | Admin |
-| `GET /admin/reports` | Rapportages | Admin |
+| `GET /admin/reports` | Rapportages | Manager, Admin |
+| `GET /admin/audit` | Auditlog viewer | Manager, Admin |
+| `GET /admin/config` | Runtimeconfiguratie zonder secrets; P1 AD-connectietest | Manager, Admin |
 
 ### 8.2 UI Componenten (prioriteit)
 
@@ -403,12 +470,14 @@ Alle templates ondersteunen: `{{ ticket.number }}`, `{{ ticket.subject }}`, `{{ 
 
 | Sprint | Weken | Deliverables |
 |--------|-------|-------------|
-| **Sprint 1** | 1–2 | Project setup, database migraties, Slim 4 routing, authenticatie (login/logout/reset), rollen middleware |
+| **Sprint 1** | 1–2 | Project setup, database migraties, routing, authenticatie (login/logout/reset), rollen middleware |
 | **Sprint 2** | 3–4 | Publiek ticketformulier, ticketaanmaak (backend), automatisch ticketnummer, bevestigingsmail, klantportaal via token |
 | **Sprint 3** | 5–6 | Agent dashboard, ticketlijst (filters + zoeken), ticketdetailpagina, statuswijziging, toewijzing |
 | **Sprint 4** | 7–8 | Reactiesysteem (publiek + intern), bijlage-upload, e-mailnotificaties alle triggers |
-| **Sprint 5** | 9–10 | Admin paneel (gebruikers, categorieën, SLA, e-mailsjablonen), audit log viewer |
-| **Sprint 6** | 11–12 | Admin rapportages dashboard, SLA-escalatielogica, performance-optimalisatie, installatie-wizard, UAT |
+| **Sprint 5** | 9–10 | Admin paneel (gebruikers, categorieën, SLA, e-mailsjablonen), auditlog viewer, runtimeconfiguratie zonder secrets |
+| **Sprint 6** | 11–12 | Manager/admin rapportages dashboard, SLA-escalatielogica, performance-optimalisatie, installatie-wizard, UAT |
+| **P1 Sprint A** | Na MVP | Bulkacties, kennisbank/FAQ, CSAT, CSV/PDF exports, darkmode/thema-instellingen |
+| **P1 Sprint B** | Na MVP | E-mailintake via IMAP, webhooks voor Teams/Slack, AD/LDAPS-connectie, AD-login en AD password reset/change |
 
 **MVP Go-live:** week 12 (installeerbaar bij eerste klant)
 
@@ -424,6 +493,8 @@ Alle templates ondersteunen: `{{ ticket.number }}`, `{{ ticket.subject }}`, `{{ 
 | OQ4 | Wordt het klantportaal volledig stateless (token only) of is optionele accountregistratie gewenst voor v1? | Mike | Ja – bepaalt DB-schema voor customers |
 | OQ5 | Licentiemodel: open source (MIT) of commercieel (per installatie)? | Mike | Nee – maar beïnvloedt README en installer |
 | OQ6 | Is multi-taal (NL/EN toggle) een harde klanteis voor eerste klant? | Mike | Nee – Fase 2 tenzij specifieke klant vraagt |
+| OQ7 | Welke AD-groepen mappen standaard naar viewer, agent, manager en admin? | Mike / klant-IT | Ja voor P1 AD |
+| OQ8 | Wordt AD password reset toegestaan voor alle domeingebruikers of alleen leden van een supportgroep? | Mike / klant-IT | Ja voor P1 AD |
 
 ---
 
@@ -436,6 +507,8 @@ Alle templates ondersteunen: `{{ ticket.number }}`, `{{ ticket.subject }}`, `{{ 
 | Clientformulier spam/abuse | Middel | Middel | Honeypot-veld + optionele CAPTCHA (P1) |
 | Tokenlek klantportaal (URL gedeeld) | Laag | Hoog | Token is 64-karakter random hex; optioneel OTP-verificatie (P2) |
 | PHP-sessies bij load balancing | Laag | Middel | Documenteer sessie-opslag in database of memcached als alternatief |
+| AD-misconfiguratie sluit admins buiten | Middel | Hoog | Lokale break-glass admin verplicht; AD-configtest toont veilige foutcategorie |
+| Wachtwoordlek via logs of foutmeldingen | Laag | Hoog | Secrets maskeren, wachtwoordvelden nooit loggen, auditlog alleen resultaat en foutcategorie |
 
 ---
 

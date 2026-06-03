@@ -13,6 +13,18 @@ final class App
     private array $settings;
     private const STATUSES = ['nieuw', 'open', 'in_behandeling', 'wachtend_op_klant', 'opgelost', 'gesloten'];
     private const PRIORITIES = ['laag', 'normaal', 'hoog', 'kritiek'];
+    private const ROLES = [
+        'viewer' => 'Viewer',
+        'agent' => 'Agent',
+        'manager' => 'Manager',
+        'admin' => 'Admin',
+    ];
+    private const ROLE_LEVELS = [
+        'viewer' => 10,
+        'agent' => 20,
+        'manager' => 30,
+        'admin' => 40,
+    ];
     private const TRANSITIONS = [
         'nieuw' => ['open', 'in_behandeling', 'gesloten'],
         'open' => ['in_behandeling', 'wachtend_op_klant', 'opgelost', 'gesloten'],
@@ -56,12 +68,19 @@ final class App
 
             match (true) {
                 $method === 'GET' && $path === '/' => $this->publicCreate(),
+                $method === 'GET' && $path === '/knowledge-base' => $this->knowledgeBase(),
+                $method === 'GET' && preg_match('#^/knowledge-base/([a-z0-9-]+)$#', $path, $m) => $this->knowledgeArticle($m[1]),
                 $method === 'POST' && $path === '/ticket' => $this->createTicket(),
                 $method === 'GET' && preg_match('#^/ticket/([a-f0-9]{64})$#', $path, $m) => $this->customerPortal($m[1]),
                 $method === 'POST' && preg_match('#^/ticket/([a-f0-9]{64})/reply$#', $path, $m) => $this->customerReply($m[1]),
+                $method === 'GET' && preg_match('#^/csat/([a-f0-9]{64})$#', $path, $m) => $this->csatForm($m[1]),
+                $method === 'POST' && preg_match('#^/csat/([a-f0-9]{64})$#', $path, $m) => $this->saveCsat($m[1]),
+                $method === 'POST' && $path === '/theme' => $this->setTheme(),
                 $method === 'GET' && preg_match('#^/attachments/(\d+)$#', $path, $m) => $this->downloadAttachment((int) $m[1]),
                 $method === 'GET' && $path === '/login' => $this->loginForm(),
                 $method === 'POST' && $path === '/login' => $this->login(),
+                $method === 'GET' && $path === '/ad/password' => $this->adPasswordForm(),
+                $method === 'POST' && $path === '/ad/password' => $this->changeAdPassword(),
                 $method === 'POST' && $path === '/logout' => $this->logout(),
                 $method === 'GET' && $path === '/profile' => $this->profileForm(),
                 $method === 'POST' && $path === '/profile' => $this->saveProfile(),
@@ -71,10 +90,13 @@ final class App
                 $method === 'POST' && preg_match('#^/password/reset/([a-f0-9]{64})$#', $path, $m) => $this->resetPassword($m[1]),
                 $method === 'GET' && $path === '/dashboard' => $this->dashboard(),
                 $method === 'GET' && $path === '/tickets' => $this->tickets(),
+                $method === 'GET' && $path === '/tickets/new' => $this->publicCreate(),
                 $method === 'GET' && preg_match('#^/tickets/(\d+)$#', $path, $m) => $this->ticketDetail((int) $m[1]),
                 $method === 'POST' && preg_match('#^/tickets/(\d+)/reply$#', $path, $m) => $this->agentReply((int) $m[1]),
                 $method === 'PATCH' && preg_match('#^/tickets/(\d+)/status$#', $path, $m) => $this->changeStatus((int) $m[1]),
                 $method === 'PATCH' && preg_match('#^/tickets/(\d+)/assign$#', $path, $m) => $this->assignTicket((int) $m[1]),
+                $method === 'POST' && preg_match('#^/tickets/(\d+)/time$#', $path, $m) => $this->addTimeEntry((int) $m[1]),
+                $method === 'POST' && $path === '/tickets/bulk' => $this->bulkTickets(),
                 $method === 'GET' && $path === '/admin/users' => $this->adminUsers(),
                 $method === 'POST' && $path === '/admin/users' => $this->saveUser(),
                 $method === 'GET' && preg_match('#^/admin/users/(\d+)$#', $path, $m) => $this->editUserForm((int) $m[1]),
@@ -88,7 +110,18 @@ final class App
                 $method === 'GET' && $path === '/admin/templates' => $this->adminTemplates(),
                 $method === 'POST' && $path === '/admin/templates' => $this->saveTemplate(),
                 $method === 'GET' && $path === '/admin/reports' => $this->adminReports(),
+                $method === 'GET' && $path === '/admin/export' => $this->exportTickets(),
                 $method === 'GET' && $path === '/admin/audit' => $this->adminAudit(),
+                $method === 'GET' && $path === '/admin/knowledge-base' => $this->adminKnowledge(),
+                $method === 'POST' && $path === '/admin/knowledge-base' => $this->saveKnowledge(),
+                $method === 'GET' && preg_match('#^/admin/knowledge-base/(\d+)$#', $path, $m) => $this->editKnowledge((int) $m[1]),
+                $method === 'POST' && preg_match('#^/admin/knowledge-base/(\d+)$#', $path, $m) => $this->updateKnowledge((int) $m[1]),
+                $method === 'GET' && $path === '/admin/webhooks' => $this->adminWebhooks(),
+                $method === 'POST' && $path === '/admin/webhooks' => $this->saveWebhook(),
+                $method === 'POST' && preg_match('#^/admin/webhooks/(\d+)/toggle$#', $path, $m) => $this->toggleWebhook((int) $m[1]),
+                $method === 'GET' && $path === '/admin/config' => $this->adminConfig(),
+                $method === 'POST' && $path === '/admin/config' => $this->saveConfig(),
+                $method === 'POST' && $path === '/admin/ad/test' => $this->testAdConnection(),
                 default => $this->notFound(),
             };
         } catch (Throwable $e) {
@@ -180,17 +213,110 @@ final class App
         return true;
     }
 
+    public function runImapIntake(): int
+    {
+        $imap = $this->settings['imap'] ?? [];
+        if (!function_exists('imap_open')) {
+            throw new \RuntimeException('PHP-extensie imap is niet geinstalleerd.');
+        }
+        if (($imap['mailbox'] ?? '') === '' || ($imap['username'] ?? '') === '') {
+            throw new \RuntimeException('IMAP_MAILBOX en IMAP_USERNAME zijn verplicht.');
+        }
+        $box = @imap_open((string) $imap['mailbox'], (string) $imap['username'], (string) ($imap['password'] ?? ''));
+        if (!$box) {
+            throw new \RuntimeException('IMAP-connectie mislukt: ' . (imap_last_error() ?: 'onbekend'));
+        }
+        $categoryId = (int) (($imap['default_category_id'] ?? '') ?: $this->defaultCategoryId());
+        $processed = 0;
+        foreach (imap_search($box, 'UNSEEN') ?: [] as $msgNo) {
+            $header = imap_headerinfo($box, $msgNo);
+            $messageId = trim((string) ($header->message_id ?? 'imap-' . $msgNo . '-' . time()));
+            $stmt = $this->db->prepare('SELECT COUNT(*) FROM inbound_mail_log WHERE message_id = ?');
+            $stmt->execute([$messageId]);
+            if ((int) $stmt->fetchColumn() > 0) {
+                continue;
+            }
+            $subject = imap_utf8((string) ($header->subject ?? 'E-mail ticket'));
+            $from = $header->from[0] ?? null;
+            $email = $from ? (($from->mailbox ?? 'unknown') . '@' . ($from->host ?? 'localhost')) : 'unknown@example.local';
+            $name = $from ? trim((string) (($from->personal ?? '') ?: $email)) : $email;
+            $body = trim((string) imap_fetchbody($box, $msgNo, '1'));
+            if ($body === '') {
+                $body = trim((string) imap_body($box, $msgNo));
+            }
+            $this->db->beginTransaction();
+            $number = $this->nextTicketNumber();
+            $token = bin2hex(random_bytes(32));
+            $deadline = $this->deadlineFor('normaal');
+            $firstResponseDeadline = $this->firstResponseDeadlineFor('normaal');
+            $insert = $this->db->prepare('INSERT INTO tickets (ticket_number, subject, description, status, priority, category_id, customer_name, customer_email, customer_token, sla_deadline, first_response_deadline) VALUES (?, ?, ?, "nieuw", "normaal", ?, ?, ?, ?, ?, ?)');
+            $insert->execute([$number, mb_substr($subject, 0, 255), $body, $categoryId, mb_substr($name, 0, 100), mb_substr($email, 0, 150), $token, $deadline, $firstResponseDeadline]);
+            $ticketId = (int) $this->db->lastInsertId();
+            $this->db->prepare('INSERT INTO inbound_mail_log (message_id, ticket_id, subject, sender) VALUES (?, ?, ?, ?)')->execute([$messageId, $ticketId, $subject, $email]);
+            $this->audit($ticketId, null, 'IMAP', 'ticket_created_from_email', ['message_id' => $messageId]);
+            $this->db->commit();
+            imap_setflag_full($box, (string) $msgNo, '\\Seen');
+            $processed++;
+        }
+        imap_close($box);
+        return $processed;
+    }
+
+    private function knowledgeBase(): void
+    {
+        $q = trim((string) $this->query('q'));
+        $where = 'WHERE k.is_published = 1';
+        $params = [];
+        if ($q !== '') {
+            $where .= ' AND (k.title LIKE ? OR k.body LIKE ?)';
+            $params = ['%' . $q . '%', '%' . $q . '%'];
+        }
+        $stmt = $this->db->prepare('SELECT k.*, c.name category_name FROM knowledge_articles k LEFT JOIN categories c ON c.id = k.category_id ' . $where . ' ORDER BY c.name, k.title');
+        $stmt->execute($params);
+        $rows = '';
+        foreach ($stmt->fetchAll() as $article) {
+            $rows .= '<article class="panel"><h2><a href="/knowledge-base/' . $this->e($article['slug']) . '">' . $this->e($article['title']) . '</a></h2><p>' . $this->e($article['category_name'] ?? 'Algemeen') . '</p><p>' . $this->e(mb_substr(strip_tags((string) $article['body']), 0, 180)) . '</p></article>';
+        }
+        $body = '<section class="hero"><div><h1>Kennisbank</h1><p>Antwoorden en werkinstructies gekoppeld aan supportcategorieen.</p></div><a class="button" href="/">Ticket aanmaken</a></section>';
+        $body .= '<form class="panel filters" method="get"><input name="q" placeholder="Zoek in kennisbank" value="' . $this->e($q) . '"><button class="button">Zoeken</button></form>';
+        $body .= $rows ?: '<section class="panel"><p>Geen artikelen gevonden.</p></section>';
+        $this->layout('Kennisbank', $body, false);
+    }
+
+    private function knowledgeArticle(string $slug): void
+    {
+        $stmt = $this->db->prepare('SELECT k.*, c.name category_name FROM knowledge_articles k LEFT JOIN categories c ON c.id = k.category_id WHERE k.slug = ? AND k.is_published = 1');
+        $stmt->execute([$slug]);
+        $article = $stmt->fetch();
+        if (!$article) {
+            $this->notFound();
+        }
+        $body = '<section class="hero"><div><h1>' . $this->e($article['title']) . '</h1><p>' . $this->e($article['category_name'] ?? 'Algemeen') . '</p></div><a class="button secondary" href="/knowledge-base">Terug</a></section>';
+        $body .= '<article class="panel article-body">' . nl2br($this->e((string) $article['body'])) . '</article>';
+        $this->layout((string) $article['title'], $body, false);
+    }
+
     private function publicCreate(array $errors = []): void
     {
+        $user = $this->currentUser();
         $categories = $this->db->query('SELECT * FROM categories WHERE is_active = 1 ORDER BY name')->fetchAll();
-        $body = '<section class="hero"><div><h1>Supportticket aanmaken</h1><p>Stuur uw vraag naar de servicedesk. U ontvangt direct een link om de voortgang te volgen.</p></div><a class="button secondary" href="/login">Agent login</a></section>';
+        $name = (string) ($_POST['customer_name'] ?? ($user['name'] ?? ''));
+        $email = (string) ($_POST['customer_email'] ?? ($user['email'] ?? ''));
+        $subject = (string) ($_POST['subject'] ?? '');
+        $description = (string) ($_POST['description'] ?? '');
+        $categoryId = (string) ($_POST['category_id'] ?? '');
+        $priority = in_array($_POST['priority'] ?? 'normaal', self::PRIORITIES, true) ? (string) ($_POST['priority'] ?? 'normaal') : 'normaal';
+        $action = $user ? '<a class="button" href="#ticket-form">Nieuw ticket</a>' : '<a class="button secondary" href="/login">Agent login</a>';
+        $body = '<section class="hero"><div><h1>Selfservice portaal</h1><p>Maak een ticket aan, volg de voortgang via uw ticketlink en voeg later aanvullende informatie toe.</p></div>' . $action . '</section>';
+        $body .= '<section class="portal-grid"><div class="panel"><h2>Ticket aanmaken</h2><p>Beschrijf de vraag, kies een categorie en voeg eventueel een bijlage toe.</p></div><div class="panel"><h2>Ticket volgen</h2><p>Na indienen ontvangt u een persoonlijke link naar het klantportaal.</p></div><div class="panel"><h2>Ingelogd werken</h2><p>Agents en admins kunnen vanuit de navigatie direct een nieuw ticket starten.</p></div></section>';
         $body .= $this->errors($errors) . '<form class="panel form-grid" method="post" action="/ticket" enctype="multipart/form-data">' . $this->csrf();
-        $body .= '<label>Naam<input name="customer_name" aria-label="Naam" required maxlength="100"></label><label>E-mail<input type="email" name="customer_email" aria-label="E-mail" required maxlength="150"></label>';
-        $body .= '<label>Onderwerp<input name="subject" aria-label="Onderwerp" required maxlength="255"></label><label>Categorie<select name="category_id" aria-label="Categorie" required>' . $this->options($categories, 'id', 'name') . '</select></label>';
-        $body .= '<label>Prioriteit<select name="priority" aria-label="Prioriteit">' . $this->priorityOptions() . '</select></label><label>Bijlage<input type="file" name="attachment" aria-label="Bijlage" accept=".png,.jpg,.jpeg,.pdf,.zip,.log"></label>';
-        $body .= '<label class="wide">Omschrijving<textarea name="description" aria-label="Omschrijving" rows="7" required></textarea></label><input class="hp" name="website" aria-label="Website" tabindex="-1" autocomplete="off">';
+        $body .= '<h2 id="ticket-form" class="wide">Nieuw ticket</h2>';
+        $body .= '<label>Naam<input name="customer_name" aria-label="Naam" required maxlength="100" value="' . $this->e($name) . '"></label><label>E-mail<input type="email" name="customer_email" aria-label="E-mail" required maxlength="150" value="' . $this->e($email) . '"></label>';
+        $body .= '<label>Onderwerp<input name="subject" aria-label="Onderwerp" required maxlength="255" value="' . $this->e($subject) . '"></label><label>Categorie<select name="category_id" aria-label="Categorie" required>' . $this->options($categories, 'id', 'name', $categoryId) . '</select></label>';
+        $body .= '<label>Prioriteit<select name="priority" aria-label="Prioriteit">' . $this->simpleOptions(self::PRIORITIES, $priority) . '</select></label><label>Bijlage<input type="file" name="attachment" aria-label="Bijlage" accept=".png,.jpg,.jpeg,.pdf,.zip,.log"></label>';
+        $body .= '<label class="wide">Omschrijving<textarea name="description" aria-label="Omschrijving" rows="7" required>' . $this->e($description) . '</textarea></label><input class="hp" name="website" aria-label="Website" tabindex="-1" autocomplete="off">';
         $body .= '<div class="wide actions"><button class="button" type="submit">Ticket versturen</button></div></form>';
-        $this->layout('Ticket aanmaken', $body, false);
+        $this->layout('Selfservice portaal', $body, false);
     }
 
     private function createTicket(): void
@@ -266,11 +392,25 @@ final class App
         $this->redirect('/ticket/' . $token);
     }
 
+    private function setTheme(): void
+    {
+        $this->verifyCsrf();
+        $next = ($_COOKIE['theme'] ?? '') === 'dark' ? 'light' : 'dark';
+        setcookie('theme', $next, [
+            'expires' => time() + 31536000,
+            'path' => '/',
+            'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+            'httponly' => false,
+            'samesite' => 'Lax',
+        ]);
+        $this->redirect((string) ($_SERVER['HTTP_REFERER'] ?? '/'));
+    }
+
     private function loginForm(array $errors = []): void
     {
         $body = '<section class="auth"><form class="panel" method="post" action="/login">' . $this->csrf() . '<h1>Agent login</h1>' . $this->errors($errors);
-        $body .= '<label>E-mail<input type="email" name="email" required></label><label>Wachtwoord<input type="password" name="password" required></label>';
-        $body .= '<div class="actions"><button class="button">Inloggen</button><a href="/password/forgot">Wachtwoord vergeten</a></div></form></section>';
+        $body .= '<label>E-mail of domeinaccount<input name="email" required></label><label>Wachtwoord<input type="password" name="password" required></label>';
+        $body .= '<div class="actions"><button class="button">Inloggen</button><a href="/password/forgot">Wachtwoord vergeten</a><a href="/ad/password">AD wachtwoord wijzigen</a></div></form></section>';
         $this->layout('Login', $body, false);
     }
 
@@ -281,6 +421,13 @@ final class App
         if ($this->isLoginThrottled($email)) {
             $this->loginForm(['Te veel mislukte pogingen. Probeer het over 15 minuten opnieuw.']);
             return;
+        }
+        $adUser = $this->attemptAdLogin($email, (string) ($_POST['password'] ?? ''));
+        if ($adUser) {
+            $this->recordLoginAttempt($email, true);
+            $_SESSION['user_id'] = (int) $adUser['id'];
+            $this->db->prepare('UPDATE users SET last_login = NOW() WHERE id = ?')->execute([$adUser['id']]);
+            $this->redirect('/dashboard');
         }
         $stmt = $this->db->prepare('SELECT * FROM users WHERE email = ? AND is_active = 1');
         $stmt->execute([$email]);
@@ -294,6 +441,38 @@ final class App
         $_SESSION['user_id'] = (int) $user['id'];
         $this->db->prepare('UPDATE users SET last_login = NOW() WHERE id = ?')->execute([$user['id']]);
         $this->redirect('/dashboard');
+    }
+
+    private function adPasswordForm(array $errors = [], string $message = ''): void
+    {
+        $body = '<section class="auth"><form class="panel" method="post" action="/ad/password">' . $this->csrf() . '<h1>AD wachtwoord wijzigen</h1>' . $this->errors($errors);
+        if ($message !== '') {
+            $body .= '<div class="notice">' . $this->e($message) . '</div>';
+        }
+        $body .= '<label>Domeinaccount<input name="username" required autocomplete="username"></label>';
+        $body .= '<label>Huidig wachtwoord<input type="password" name="current_password" required autocomplete="current-password"></label>';
+        $body .= '<label>Nieuw wachtwoord<input type="password" name="new_password" required minlength="10" autocomplete="new-password"></label>';
+        $body .= '<div class="actions"><button class="button">Wijzigen</button><a href="/login">Terug naar login</a></div></form></section>';
+        $this->layout('AD wachtwoord wijzigen', $body, false);
+    }
+
+    private function changeAdPassword(): void
+    {
+        $this->verifyCsrf();
+        $username = trim((string) ($_POST['username'] ?? ''));
+        $current = (string) ($_POST['current_password'] ?? '');
+        $new = (string) ($_POST['new_password'] ?? '');
+        if ($username === '' || strlen($new) < 10) {
+            $this->adPasswordForm(['Gebruik een domeinaccount en een nieuw wachtwoord van minimaal 10 tekens.']);
+            return;
+        }
+        [$ok, $category] = $this->adChangePassword($username, $current, $new);
+        $this->safeAudit('ad_password_change_' . ($ok ? 'success' : 'failed'), ['actor' => $username, 'result' => $category]);
+        if (!$ok) {
+            $this->adPasswordForm(['AD-wachtwoord wijzigen mislukt: ' . $category]);
+            return;
+        }
+        $this->adPasswordForm([], 'Wachtwoord gewijzigd.');
     }
 
     private function isLoginThrottled(string $email): bool
@@ -429,20 +608,25 @@ final class App
 
     private function ticketDetail(int $id): void
     {
-        $this->requireUser();
+        $user = $this->requireUser();
         $ticket = $this->ticket($id);
         $body = '<section class="hero"><div><h1>' . $this->e($ticket['ticket_number']) . '</h1><p>' . $this->e($ticket['subject']) . '</p></div>' . $this->badge($ticket['status']) . '</section>';
         $body .= $this->ticketSummary($ticket, true);
-        $body .= $this->agentActions($ticket);
+        if ($this->hasMinimumRole($user, 'agent')) {
+            $body .= $this->agentActions($ticket);
+        }
         $body .= $this->timeline($id, $this->replies($id, true), true);
-        $body .= '<form class="panel" method="post" action="/tickets/' . $id . '/reply" enctype="multipart/form-data">' . $this->csrf() . '<h2>Reactie toevoegen</h2>';
-        $body .= '<label>Bericht<textarea name="body" rows="5" required></textarea></label><label class="check"><input type="checkbox" name="is_internal" value="1"> Interne notitie</label><label>Bijlage<input type="file" name="attachment" accept=".png,.jpg,.jpeg,.pdf,.zip,.log"></label><div class="actions"><button class="button">Plaatsen</button></div></form>';
+        if ($this->hasMinimumRole($user, 'agent')) {
+            $body .= $this->timeEntriesPanel($id);
+            $body .= '<form class="panel" method="post" action="/tickets/' . $id . '/reply" enctype="multipart/form-data">' . $this->csrf() . '<h2>Reactie toevoegen</h2>';
+            $body .= '<label>Bericht<textarea name="body" rows="5" required></textarea></label><label class="check"><input type="checkbox" name="is_internal" value="1"> Interne notitie</label><label>Bijlage<input type="file" name="attachment" accept=".png,.jpg,.jpeg,.pdf,.zip,.log"></label><div class="actions"><button class="button">Plaatsen</button></div></form>';
+        }
         $this->layout('Ticketdetail', $body);
     }
 
     private function agentReply(int $id): void
     {
-        $user = $this->requireUser();
+        $user = $this->requireMinimumRole('agent');
         $this->verifyCsrf();
         if (trim((string) ($_POST['body'] ?? '')) === '') {
             $this->redirect('/tickets/' . $id);
@@ -463,9 +647,39 @@ final class App
         $this->redirect('/tickets/' . $id);
     }
 
+    private function bulkTickets(): void
+    {
+        $user = $this->requireMinimumRole('agent');
+        $this->verifyCsrf();
+        $ids = array_values(array_filter(array_map('intval', (array) ($_POST['ticket_ids'] ?? []))));
+        if (!$ids) {
+            $this->redirect('/tickets');
+        }
+        $status = (string) ($_POST['bulk_status'] ?? '');
+        $assignedTo = ($_POST['bulk_assigned_to'] ?? '') === '' ? null : (int) $_POST['bulk_assigned_to'];
+        foreach ($ids as $id) {
+            $ticket = $this->ticket($id);
+            if ($status !== '' && in_array($status, self::TRANSITIONS[$ticket['status']] ?? [], true)) {
+                $closed = $status === 'gesloten' ? ', closed_at = NOW()' : '';
+                $this->db->prepare('UPDATE tickets SET status = ?' . $closed . ' WHERE id = ?')->execute([$status, $id]);
+                $this->audit($id, (int) $user['id'], $user['name'], 'bulk_status_changed', ['from' => $ticket['status'], 'to' => $status]);
+                if ($status === 'gesloten') {
+                    $closedTicket = $this->ticket($id);
+                    $closedTicket['csat_link'] = $this->ensureCsatSurvey($id);
+                    $this->notify('ticket_closed', [$closedTicket['customer_email']], $closedTicket);
+                }
+            }
+            if ($assignedTo !== null) {
+                $this->db->prepare('UPDATE tickets SET assigned_to = ? WHERE id = ?')->execute([$assignedTo, $id]);
+                $this->audit($id, (int) $user['id'], $user['name'], 'bulk_assigned', ['assigned_to' => $assignedTo]);
+            }
+        }
+        $this->redirect('/tickets');
+    }
+
     private function changeStatus(int $id): void
     {
-        $user = $this->requireUser();
+        $user = $this->requireMinimumRole('agent');
         $this->verifyCsrf();
         $ticket = $this->ticket($id);
         $next = (string) ($_POST['status'] ?? '');
@@ -476,20 +690,75 @@ final class App
         $this->db->prepare('UPDATE tickets SET status = ?' . $closed . ' WHERE id = ?')->execute([$next, $id]);
         $this->audit($id, (int) $user['id'], $user['name'], 'status_changed', ['from' => $ticket['status'], 'to' => $next]);
         $updated = $this->ticket($id);
+        if ($next === 'gesloten') {
+            $updated['csat_link'] = $this->ensureCsatSurvey($id);
+        }
         $this->notify($next === 'gesloten' ? 'ticket_closed' : 'status_changed', array_unique([$updated['customer_email'], ...$this->agentAndAdminEmails($updated)]), $updated);
         $this->redirect('/tickets/' . $id);
     }
 
+    private function addTimeEntry(int $id): void
+    {
+        $user = $this->requireMinimumRole('agent');
+        $this->verifyCsrf();
+        $minutes = max(1, (int) ($_POST['minutes'] ?? 0));
+        $note = trim((string) ($_POST['note'] ?? ''));
+        $this->db->prepare('INSERT INTO ticket_time_entries (ticket_id, user_id, minutes, note) VALUES (?, ?, ?, ?)')->execute([$id, $user['id'], $minutes, $note]);
+        $this->audit($id, (int) $user['id'], $user['name'], 'time_logged', ['minutes' => $minutes]);
+        $this->redirect('/tickets/' . $id);
+    }
+
+    private function csatForm(string $token, array $errors = []): void
+    {
+        $survey = $this->csatByToken($token);
+        $ticket = $this->ticket((int) $survey['ticket_id']);
+        $body = '<section class="auth"><form class="panel" method="post" action="/csat/' . $this->e($token) . '">' . $this->csrf();
+        $body .= '<h1>Tevredenheid</h1><p>' . $this->e($ticket['ticket_number']) . ' - ' . $this->e($ticket['subject']) . '</p>' . $this->errors($errors);
+        if ($survey['submitted_at']) {
+            $body .= '<div class="notice">Bedankt, uw beoordeling is al ontvangen.</div></form></section>';
+            $this->layout('CSAT', $body, false);
+            return;
+        }
+        $body .= '<label>Score<select name="score" required>' . $this->simpleOptions(['1', '2', '3', '4', '5'], '5') . '</select></label>';
+        $body .= '<label>Toelichting<textarea name="comment" rows="4"></textarea></label><div class="actions"><button class="button">Versturen</button></div></form></section>';
+        $this->layout('CSAT', $body, false);
+    }
+
+    private function saveCsat(string $token): void
+    {
+        $this->verifyCsrf();
+        $survey = $this->csatByToken($token);
+        if ($survey['submitted_at']) {
+            $this->csatForm($token);
+            return;
+        }
+        $score = (int) ($_POST['score'] ?? 0);
+        if ($score < 1 || $score > 5) {
+            $this->csatForm($token, ['Kies een score van 1 tot en met 5.']);
+            return;
+        }
+        $this->db->prepare('UPDATE csat_surveys SET score = ?, comment = ?, submitted_at = NOW() WHERE token = ?')->execute([$score, trim((string) ($_POST['comment'] ?? '')), $token]);
+        $this->audit((int) $survey['ticket_id'], null, 'Klant', 'csat_submitted', ['score' => $score]);
+        $this->csatForm($token);
+    }
+
     private function assignTicket(int $id): void
     {
-        $user = $this->requireUser();
+        $user = $this->requireMinimumRole('agent');
         $this->verifyCsrf();
         $agent = ($_POST['assigned_to'] ?? '') === '' ? null : (int) $_POST['assigned_to'];
+        if ($agent !== null) {
+            $stmt = $this->db->prepare('SELECT COUNT(*) FROM users WHERE id = ? AND is_active = 1 AND role IN ("agent","manager","admin")');
+            $stmt->execute([$agent]);
+            if ((int) $stmt->fetchColumn() === 0) {
+                $agent = null;
+            }
+        }
         $this->db->prepare('UPDATE tickets SET assigned_to = ? WHERE id = ?')->execute([$agent, $id]);
         $this->audit($id, (int) $user['id'], $user['name'], 'assigned', ['assigned_to' => $agent]);
         $ticket = $this->ticket($id);
         if ($agent) {
-            $stmt = $this->db->prepare('SELECT email FROM users WHERE id = ? AND is_active = 1');
+            $stmt = $this->db->prepare('SELECT email FROM users WHERE id = ? AND is_active = 1 AND role IN ("agent","manager","admin")');
             $stmt->execute([$agent]);
             if ($email = $stmt->fetchColumn()) {
                 $this->notify('ticket_assigned', [(string) $email], $ticket);
@@ -532,13 +801,13 @@ final class App
     private function adminUsers(array $errors = []): void
     {
         $this->requireAdmin();
-        $users = $this->db->query('SELECT * FROM users ORDER BY role DESC, name')->fetchAll();
+        $users = $this->db->query('SELECT * FROM users ORDER BY FIELD(role,"admin","manager","agent","viewer"), name')->fetchAll();
         $rows = '';
         foreach ($users as $u) {
-            $rows .= '<tr><td><a href="/admin/users/' . (int) $u['id'] . '">' . $this->e($u['name']) . '</a></td><td>' . $this->e($u['email']) . '</td><td>' . $this->e($u['role']) . '</td><td>' . ($u['is_active'] ? 'Actief' : 'Inactief') . '</td></tr>';
+            $rows .= '<tr><td><a href="/admin/users/' . (int) $u['id'] . '">' . $this->e($u['name']) . '</a></td><td>' . $this->e($u['email']) . '</td><td>' . $this->e($this->roleLabel((string) $u['role'])) . '</td><td>' . ($u['is_active'] ? 'Actief' : 'Inactief') . '</td></tr>';
         }
-        $body = '<section class="hero"><div><h1>Gebruikersbeheer</h1><p>Agents en admins beheren.</p></div></section>' . $this->errors($errors) . '<form class="panel form-grid" method="post">' . $this->csrf();
-        $body .= '<label>Naam<input name="name" required></label><label>E-mail<input type="email" name="email" required></label><label>Rol<select name="role"><option>agent</option><option>admin</option></select></label><label>Wachtwoord<input type="password" name="password" required minlength="10"></label><div class="wide actions"><button class="button">Gebruiker toevoegen</button></div></form>';
+        $body = '<section class="hero"><div><h1>Gebruikersbeheer</h1><p>Rollen, accounts en toegang beheren.</p></div></section>' . $this->errors($errors) . '<form class="panel form-grid" method="post">' . $this->csrf();
+        $body .= '<label>Naam<input name="name" required></label><label>E-mail<input type="email" name="email" required></label><label>Rol<select name="role">' . $this->roleOptions('agent') . '</select></label><label>Wachtwoord<input type="password" name="password" required minlength="10"></label><div class="wide actions"><button class="button">Gebruiker toevoegen</button></div></form>';
         $body .= '<table class="table"><tr><th>Naam</th><th>E-mail</th><th>Rol</th><th>Status</th></tr>' . $rows . '</table>';
         $this->layout('Gebruikers', $body);
     }
@@ -554,7 +823,7 @@ final class App
             $this->adminUsers(['Naam, geldig e-mailadres en wachtwoord van minimaal 10 tekens zijn verplicht.']);
             return;
         }
-        $role = in_array($_POST['role'] ?? 'agent', ['agent', 'admin'], true) ? $_POST['role'] : 'agent';
+        $role = $this->validRole((string) ($_POST['role'] ?? 'agent'));
         try {
             $this->db->prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')->execute([$name, $email, password_hash($password, PASSWORD_BCRYPT), $role]);
         } catch (Throwable) {
@@ -578,7 +847,7 @@ final class App
         $body = '<section class="hero"><div><h1>Gebruiker bewerken</h1><p>' . $this->e($user['email']) . '</p></div><a class="button secondary" href="/admin/users">Terug</a></section>';
         $body .= '<form class="panel form-grid" method="post" action="/admin/users/' . (int) $user['id'] . '">' . $this->csrf() . $this->errors($errors);
         $body .= '<label>Naam<input name="name" required value="' . $this->e($user['name']) . '"></label><label>E-mail<input type="email" name="email" required value="' . $this->e($user['email']) . '"></label>';
-        $body .= '<label>Rol<select name="role">' . $this->simpleOptions(['agent', 'admin'], (string) $user['role']) . '</select></label><label>Nieuw wachtwoord<input type="password" name="password" minlength="10" placeholder="Leeg laten om niet te wijzigen"></label>';
+        $body .= '<label>Rol<select name="role">' . $this->roleOptions((string) $user['role']) . '</select></label><label>Nieuw wachtwoord<input type="password" name="password" minlength="10" placeholder="Leeg laten om niet te wijzigen"></label>';
         $body .= '<label class="wide check"><input type="checkbox" name="is_active" value="1"' . $active . '> Account actief</label>';
         $body .= '<label class="wide check"><input type="checkbox" name="notify_on_assignment" value="1"' . $notify . '> Mail bij toewijzing</label>';
         $body .= '<div class="wide actions"><button class="button">Wijzigingen opslaan</button></div></form>';
@@ -597,7 +866,7 @@ final class App
         }
         $name = trim((string) ($_POST['name'] ?? ''));
         $email = trim((string) ($_POST['email'] ?? ''));
-        $role = in_array($_POST['role'] ?? 'agent', ['agent', 'admin'], true) ? (string) $_POST['role'] : 'agent';
+        $role = $this->validRole((string) ($_POST['role'] ?? 'agent'));
         $active = isset($_POST['is_active']) ? 1 : 0;
         $notify = isset($_POST['notify_on_assignment']) ? 1 : 0;
         $errors = [];
@@ -744,23 +1013,50 @@ final class App
 
     private function adminReports(): void
     {
-        $this->requireAdmin();
+        $this->requireMinimumRole('manager');
         $avg = $this->db->query('SELECT AVG(TIMESTAMPDIFF(HOUR, created_at, closed_at)) FROM tickets WHERE closed_at IS NOT NULL')->fetchColumn();
         $avgFirst = $this->db->query('SELECT AVG(TIMESTAMPDIFF(MINUTE, created_at, first_response_at)) / 60 FROM tickets WHERE first_response_at IS NOT NULL')->fetchColumn();
         $slaOk = $this->db->query('SELECT ROUND(100 * SUM(sla_deadline IS NULL OR closed_at IS NULL OR closed_at <= sla_deadline) / GREATEST(COUNT(*),1), 1) FROM tickets')->fetchColumn();
+        $timeTotal = $this->db->query('SELECT COALESCE(SUM(minutes),0) FROM ticket_time_entries')->fetchColumn();
+        $csatAvg = $this->db->query('SELECT AVG(score) FROM csat_surveys WHERE submitted_at IS NOT NULL')->fetchColumn();
         $rows = '';
         foreach ($this->db->query('SELECT COALESCE(u.name, "Niet toegewezen") agent, COUNT(t.id) total FROM tickets t LEFT JOIN users u ON u.id=t.assigned_to GROUP BY agent ORDER BY total DESC') as $r) {
             $rows .= '<tr><td>' . $this->e($r['agent']) . '</td><td>' . (int) $r['total'] . '</td></tr>';
         }
-        $body = '<section class="hero"><div><h1>Rapportages</h1><p>KPI’s voor servicekwaliteit.</p></div></section>';
-        $body .= '<section class="kpis"><div><b>' . $this->countWhere('status NOT IN ("opgelost","gesloten")') . '</b><span>Open tickets</span></div><div><b>' . round((float) $avgFirst, 1) . '</b><span>Gem. eerste reactietijd uren</span></div><div><b>' . round((float) $avg, 1) . '</b><span>Gem. afhandeltijd uren</span></div><div><b>' . $slaOk . '%</b><span>SLA-naleving</span></div></section>';
+        $body = '<section class="hero"><div><h1>Rapportages</h1><p>KPI’s voor servicekwaliteit.</p></div><div class="actions"><a class="button secondary" href="/admin/export?format=csv">CSV</a><a class="button secondary" href="/admin/export?format=pdf">PDF</a></div></section>';
+        $body .= '<section class="kpis"><div><b>' . $this->countWhere('status NOT IN ("opgelost","gesloten")') . '</b><span>Open tickets</span></div><div><b>' . round((float) $avgFirst, 1) . '</b><span>Gem. eerste reactietijd uren</span></div><div><b>' . round((float) $avg, 1) . '</b><span>Gem. afhandeltijd uren</span></div><div><b>' . $slaOk . '%</b><span>SLA-naleving</span></div><div><b>' . round(((int) $timeTotal) / 60, 1) . '</b><span>Gelogde uren</span></div><div><b>' . round((float) $csatAvg, 1) . '</b><span>Gem. CSAT</span></div></section>';
         $body .= '<table class="table"><tr><th>Agent</th><th>Tickets</th></tr>' . $rows . '</table>';
         $this->layout('Rapportages', $body);
     }
 
+    private function exportTickets(): void
+    {
+        $this->requireMinimumRole('manager');
+        $tickets = $this->filteredTickets($_GET + ['limit' => '1000']);
+        $format = (string) ($this->query('format') ?? 'csv');
+        if ($format === 'pdf') {
+            $text = "Ticketrapport\n\n";
+            foreach ($tickets as $ticket) {
+                $text .= $ticket['ticket_number'] . ' | ' . $ticket['status'] . ' | ' . $ticket['priority'] . ' | ' . $ticket['subject'] . "\n";
+            }
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: attachment; filename="ticketrapport.pdf"');
+            echo $this->simplePdf($text);
+            exit;
+        }
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="tickets.csv"');
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['ticketnummer', 'status', 'prioriteit', 'categorie', 'agent', 'klant', 'email', 'aangemaakt']);
+        foreach ($tickets as $ticket) {
+            fputcsv($out, [$ticket['ticket_number'], $ticket['status'], $ticket['priority'], $ticket['category_name'], $ticket['agent_name'], $ticket['customer_name'], $ticket['customer_email'], $ticket['created_at']]);
+        }
+        exit;
+    }
+
     private function adminAudit(): void
     {
-        $this->requireAdmin();
+        $this->requireMinimumRole('manager');
         $where = [];
         $params = [];
         if (($this->query('ticket') ?? '') !== '') {
@@ -788,9 +1084,317 @@ final class App
         $this->layout('Auditlog', $body);
     }
 
+    private function adminKnowledge(array $errors = []): void
+    {
+        $this->requireAdmin();
+        $categories = $this->db->query('SELECT id, name FROM categories ORDER BY name')->fetchAll();
+        $rows = '';
+        foreach ($this->db->query('SELECT k.*, c.name category_name FROM knowledge_articles k LEFT JOIN categories c ON c.id = k.category_id ORDER BY k.updated_at DESC') as $article) {
+            $rows .= '<tr><td><a href="/admin/knowledge-base/' . (int) $article['id'] . '">' . $this->e($article['title']) . '</a></td><td>' . $this->e($article['category_name'] ?? 'Algemeen') . '</td><td>' . ($article['is_published'] ? 'Gepubliceerd' : 'Concept') . '</td></tr>';
+        }
+        $body = '<section class="hero"><div><h1>Kennisbankbeheer</h1><p>FAQ-artikelen voor selfservice en categorieen.</p></div><a class="button secondary" href="/knowledge-base">Publiek bekijken</a></section>' . $this->errors($errors);
+        $body .= '<form class="panel form-grid" method="post">' . $this->csrf() . '<label>Titel<input name="title" required></label><label>Categorie<select name="category_id"><option value="">Algemeen</option>' . $this->options($categories, 'id', 'name') . '</select></label><label class="wide">Artikel<textarea name="body" rows="8" required></textarea></label><label class="check wide"><input type="checkbox" name="is_published" value="1" checked> Publiceren</label><div class="actions wide"><button class="button">Artikel toevoegen</button></div></form>';
+        $body .= '<table class="table"><tr><th>Titel</th><th>Categorie</th><th>Status</th></tr>' . ($rows ?: '<tr><td colspan="3">Geen artikelen.</td></tr>') . '</table>';
+        $this->layout('Kennisbankbeheer', $body);
+    }
+
+    private function saveKnowledge(): void
+    {
+        $this->requireAdmin();
+        $this->verifyCsrf();
+        $title = trim((string) ($_POST['title'] ?? ''));
+        $body = trim((string) ($_POST['body'] ?? ''));
+        if ($title === '' || $body === '') {
+            $this->adminKnowledge(['Titel en artikeltekst zijn verplicht.']);
+            return;
+        }
+        $slug = $this->uniqueSlug($title);
+        $categoryId = ($_POST['category_id'] ?? '') === '' ? null : (int) $_POST['category_id'];
+        $this->db->prepare('INSERT INTO knowledge_articles (category_id, title, slug, body, is_published) VALUES (?, ?, ?, ?, ?)')->execute([$categoryId, $title, $slug, $body, isset($_POST['is_published']) ? 1 : 0]);
+        $this->redirect('/admin/knowledge-base');
+    }
+
+    private function editKnowledge(int $id, array $errors = []): void
+    {
+        $this->requireAdmin();
+        $stmt = $this->db->prepare('SELECT * FROM knowledge_articles WHERE id = ?');
+        $stmt->execute([$id]);
+        $article = $stmt->fetch();
+        if (!$article) {
+            $this->notFound();
+        }
+        $categories = $this->db->query('SELECT id, name FROM categories ORDER BY name')->fetchAll();
+        $checked = $article['is_published'] ? ' checked' : '';
+        $body = '<section class="hero"><div><h1>Artikel bewerken</h1><p>' . $this->e($article['slug']) . '</p></div><a class="button secondary" href="/admin/knowledge-base">Terug</a></section>' . $this->errors($errors);
+        $body .= '<form class="panel form-grid" method="post">' . $this->csrf() . '<label>Titel<input name="title" required value="' . $this->e($article['title']) . '"></label><label>Categorie<select name="category_id"><option value="">Algemeen</option>' . $this->options($categories, 'id', 'name', (string) ($article['category_id'] ?? '')) . '</select></label><label class="wide">Artikel<textarea name="body" rows="10" required>' . $this->e($article['body']) . '</textarea></label><label class="check wide"><input type="checkbox" name="is_published" value="1"' . $checked . '> Publiceren</label><div class="actions wide"><button class="button">Opslaan</button></div></form>';
+        $this->layout('Artikel bewerken', $body);
+    }
+
+    private function updateKnowledge(int $id): void
+    {
+        $this->requireAdmin();
+        $this->verifyCsrf();
+        $title = trim((string) ($_POST['title'] ?? ''));
+        $body = trim((string) ($_POST['body'] ?? ''));
+        if ($title === '' || $body === '') {
+            $this->editKnowledge($id, ['Titel en artikeltekst zijn verplicht.']);
+            return;
+        }
+        $categoryId = ($_POST['category_id'] ?? '') === '' ? null : (int) $_POST['category_id'];
+        $this->db->prepare('UPDATE knowledge_articles SET category_id = ?, title = ?, body = ?, is_published = ? WHERE id = ?')->execute([$categoryId, $title, $body, isset($_POST['is_published']) ? 1 : 0, $id]);
+        $this->redirect('/admin/knowledge-base');
+    }
+
+    private function adminWebhooks(array $errors = []): void
+    {
+        $this->requireAdmin();
+        $rows = '';
+        foreach ($this->db->query('SELECT * FROM webhook_endpoints ORDER BY created_at DESC') as $hook) {
+            $rows .= '<tr><td>' . $this->e($hook['name']) . '<small>' . $this->e($hook['url']) . '</small></td><td>' . $this->e($hook['events']) . '</td><td>' . ($hook['is_active'] ? 'Actief' : 'Uit') . '</td><td><form method="post" action="/admin/webhooks/' . (int) $hook['id'] . '/toggle">' . $this->csrf() . '<button class="button secondary">Toggle</button></form></td></tr>';
+        }
+        $body = '<section class="hero"><div><h1>Webhooks</h1><p>Teams/Slack of andere HTTP-endpoints bij ticket-events.</p></div></section>' . $this->errors($errors);
+        $body .= '<form class="panel form-grid" method="post">' . $this->csrf() . '<label>Naam<input name="name" required></label><label>URL<input name="url" required placeholder="https://..."></label><label class="wide">Events<input name="events" value="*" placeholder="*, ticket_created, status_changed"></label><div class="actions wide"><button class="button">Webhook toevoegen</button></div></form>';
+        $body .= '<table class="table"><tr><th>Endpoint</th><th>Events</th><th>Status</th><th></th></tr>' . ($rows ?: '<tr><td colspan="4">Geen webhooks.</td></tr>') . '</table>';
+        $this->layout('Webhooks', $body);
+    }
+
+    private function saveWebhook(): void
+    {
+        $this->requireAdmin();
+        $this->verifyCsrf();
+        $name = trim((string) ($_POST['name'] ?? ''));
+        $url = trim((string) ($_POST['url'] ?? ''));
+        if ($name === '' || !filter_var($url, FILTER_VALIDATE_URL)) {
+            $this->adminWebhooks(['Naam en geldige webhook-URL zijn verplicht.']);
+            return;
+        }
+        $this->db->prepare('INSERT INTO webhook_endpoints (name, url, events) VALUES (?, ?, ?)')->execute([$name, $url, trim((string) ($_POST['events'] ?? '*')) ?: '*']);
+        $this->redirect('/admin/webhooks');
+    }
+
+    private function toggleWebhook(int $id): void
+    {
+        $this->requireAdmin();
+        $this->verifyCsrf();
+        $this->db->prepare('UPDATE webhook_endpoints SET is_active = 1 - is_active WHERE id = ?')->execute([$id]);
+        $this->redirect('/admin/webhooks');
+    }
+
+    private function adminConfig(): void
+    {
+        $user = $this->requireMinimumRole('manager');
+        $mail = $this->settings['mail'];
+        $db = $this->settings['db'];
+        $imap = $this->settings['imap'] ?? [];
+        $ad = $this->settings['ad'] ?? [];
+        $storagePath = (string) $this->settings['storage_path'];
+        $rows = [
+            ['Applicatienaam', (string) $this->settings['app_name']],
+            ['Publieke URL', (string) $this->settings['app_url']],
+            ['Omgeving', (string) $this->settings['app_env']],
+            ['Database', (string) $db['database'] . ' @ ' . (string) $db['host'] . ':' . (string) $db['port']],
+            ['SMTP', ((string) $mail['smtp_host'] !== '' ? (string) $mail['smtp_host'] . ':' . (string) $mail['smtp_port'] : 'Niet geconfigureerd')],
+            ['IMAP intake', ((string) ($imap['mailbox'] ?? '') !== '' ? 'Geconfigureerd' : 'Niet geconfigureerd')],
+            ['AD/LDAPS', ((string) ($ad['host'] ?? '') !== '' ? (string) $ad['host'] . ':' . (string) $ad['port'] : 'Niet geconfigureerd')],
+            ['Afzender', (string) $mail['from_name'] . ' <' . (string) $mail['from'] . '>'],
+            ['Dataretentie', (int) $this->settings['data_retention_days'] . ' dagen'],
+            ['Bijlagenmap', $storagePath . (is_writable($storagePath) ? ' (schrijfbaar)' : ' (niet schrijfbaar)')],
+            ['PHP-versie', PHP_VERSION],
+            ['Uploadlimiet', (string) ini_get('upload_max_filesize')],
+        ];
+        $tableRows = '';
+        foreach ($rows as [$label, $value]) {
+            $tableRows .= '<tr><th>' . $this->e($label) . '</th><td>' . $this->e($value) . '</td></tr>';
+        }
+        $body = '<section class="hero"><div><h1>Configuratie</h1><p>Runtime-instellingen en systeemstatus zonder geheime waarden.</p></div></section>';
+        if ($this->query('saved') === '1') {
+            $body .= '<div class="notice">Configuratie opgeslagen. Herstart de applicatiecontainer of webserver als de runtime deze waarden al had geladen.</div>';
+        }
+        $body .= '<table class="table config-table">' . $tableRows . '</table>';
+        if (($user['role'] ?? '') === 'admin') {
+            $body .= $this->configForm();
+        } else {
+            $body .= '<section class="panel"><h2>Wijzigen</h2><p>Alleen admins kunnen configuratie via de web-UI aanpassen.</p></section>';
+        }
+        $this->layout('Configuratie', $body);
+    }
+
+    private function saveConfig(): void
+    {
+        $this->requireAdmin();
+        $this->verifyCsrf();
+
+        $values = [
+            'APP_NAME' => trim((string) ($_POST['APP_NAME'] ?? '')),
+            'APP_URL' => rtrim(trim((string) ($_POST['APP_URL'] ?? '')), '/'),
+            'APP_ENV' => trim((string) ($_POST['APP_ENV'] ?? 'production')),
+            'DB_HOST' => trim((string) ($_POST['DB_HOST'] ?? '')),
+            'DB_PORT' => trim((string) ($_POST['DB_PORT'] ?? '')),
+            'DB_DATABASE' => trim((string) ($_POST['DB_DATABASE'] ?? '')),
+            'DB_USERNAME' => trim((string) ($_POST['DB_USERNAME'] ?? '')),
+            'MAIL_FROM' => trim((string) ($_POST['MAIL_FROM'] ?? '')),
+            'MAIL_FROM_NAME' => trim((string) ($_POST['MAIL_FROM_NAME'] ?? '')),
+            'SMTP_HOST' => trim((string) ($_POST['SMTP_HOST'] ?? '')),
+            'SMTP_PORT' => trim((string) ($_POST['SMTP_PORT'] ?? '')),
+            'SMTP_USERNAME' => trim((string) ($_POST['SMTP_USERNAME'] ?? '')),
+            'SMTP_ENCRYPTION' => trim((string) ($_POST['SMTP_ENCRYPTION'] ?? 'tls')),
+            'IMAP_MAILBOX' => trim((string) ($_POST['IMAP_MAILBOX'] ?? '')),
+            'IMAP_USERNAME' => trim((string) ($_POST['IMAP_USERNAME'] ?? '')),
+            'IMAP_DEFAULT_CATEGORY_ID' => trim((string) ($_POST['IMAP_DEFAULT_CATEGORY_ID'] ?? '')),
+            'AD_HOST' => trim((string) ($_POST['AD_HOST'] ?? '')),
+            'AD_PORT' => trim((string) ($_POST['AD_PORT'] ?? '636')),
+            'AD_USE_TLS' => trim((string) ($_POST['AD_USE_TLS'] ?? 'ldaps')),
+            'AD_BASE_DN' => trim((string) ($_POST['AD_BASE_DN'] ?? '')),
+            'AD_BIND_DN' => trim((string) ($_POST['AD_BIND_DN'] ?? '')),
+            'AD_USER_FILTER' => trim((string) ($_POST['AD_USER_FILTER'] ?? '(&(objectClass=user)(sAMAccountName={username}))')),
+            'AD_GROUP_VIEWER' => trim((string) ($_POST['AD_GROUP_VIEWER'] ?? '')),
+            'AD_GROUP_AGENT' => trim((string) ($_POST['AD_GROUP_AGENT'] ?? '')),
+            'AD_GROUP_MANAGER' => trim((string) ($_POST['AD_GROUP_MANAGER'] ?? '')),
+            'AD_GROUP_ADMIN' => trim((string) ($_POST['AD_GROUP_ADMIN'] ?? '')),
+            'DATA_RETENTION_DAYS' => (string) max(365, (int) ($_POST['DATA_RETENTION_DAYS'] ?? 365)),
+        ];
+
+        $errors = [];
+        if ($values['APP_NAME'] === '') {
+            $errors[] = 'Applicatienaam is verplicht.';
+        }
+        if ($values['APP_URL'] === '' || !filter_var($values['APP_URL'], FILTER_VALIDATE_URL)) {
+            $errors[] = 'Publieke URL moet een geldige URL zijn.';
+        }
+        if (!in_array($values['APP_ENV'], ['local', 'staging', 'production'], true)) {
+            $errors[] = 'Omgeving moet local, staging of production zijn.';
+        }
+        foreach (['DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'SMTP_PORT'] as $key) {
+            if ($values[$key] === '') {
+                $errors[] = $key . ' is verplicht.';
+            }
+        }
+        foreach (['DB_PORT', 'SMTP_PORT', 'AD_PORT'] as $key) {
+            if (!ctype_digit($values[$key]) || (int) $values[$key] < 1 || (int) $values[$key] > 65535) {
+                $errors[] = $key . ' moet een poortnummer tussen 1 en 65535 zijn.';
+            }
+        }
+        if ($values['MAIL_FROM'] === '' || !filter_var($values['MAIL_FROM'], FILTER_VALIDATE_EMAIL)) {
+            $errors[] = 'MAIL_FROM moet een geldig e-mailadres zijn.';
+        }
+        if (!in_array($values['SMTP_ENCRYPTION'], ['', 'tls', 'ssl'], true)) {
+            $errors[] = 'SMTP_ENCRYPTION moet leeg, tls of ssl zijn.';
+        }
+        if (!in_array($values['AD_USE_TLS'], ['ldaps', 'starttls'], true)) {
+            $errors[] = 'AD_USE_TLS moet ldaps of starttls zijn.';
+        }
+        if ($errors) {
+            $this->adminConfigWithErrors($errors);
+            return;
+        }
+
+        $env = $this->readEnvFile();
+        foreach ($values as $key => $value) {
+            $env[$key] = $value;
+        }
+        foreach (['DB_PASSWORD', 'SMTP_PASSWORD', 'IMAP_PASSWORD', 'AD_BIND_PASSWORD'] as $secretKey) {
+            $posted = (string) ($_POST[$secretKey] ?? '');
+            if (isset($_POST['clear_' . $secretKey])) {
+                $env[$secretKey] = '';
+            } elseif ($posted !== '') {
+                $env[$secretKey] = $posted;
+            }
+        }
+        foreach (['THEME_BRAND', 'THEME_ACCENT', 'THEME_DARK'] as $settingKey) {
+            $this->setAppSetting(strtolower($settingKey), trim((string) ($_POST[$settingKey] ?? '')));
+        }
+
+        $this->writeEnvFile($env);
+        $this->redirect('/admin/config?saved=1');
+    }
+
+    private function adminConfigWithErrors(array $errors): void
+    {
+        $this->requireAdmin();
+        $body = '<section class="hero"><div><h1>Configuratie</h1><p>Controleer de invoer en probeer opnieuw.</p></div></section>';
+        $body .= $this->errors($errors);
+        $body .= $this->configForm($_POST);
+        $this->layout('Configuratie', $body);
+    }
+
+    private function configForm(array $source = []): string
+    {
+        $db = $this->settings['db'];
+        $mail = $this->settings['mail'];
+        $imap = $this->settings['imap'] ?? [];
+        $ad = $this->settings['ad'] ?? [];
+        $value = fn (string $key, string $fallback): string => $this->e((string) ($source[$key] ?? $fallback));
+        $env = $value('APP_ENV', (string) $this->settings['app_env']);
+        $enc = $value('SMTP_ENCRYPTION', (string) $mail['smtp_encryption']);
+        $envOptions = $this->simpleOptions(['local', 'staging', 'production'], $env);
+        $encOptions = $this->simpleOptions(['', 'tls', 'ssl'], $enc);
+
+        $body = '<form class="panel form-grid" method="post" action="/admin/config">' . $this->csrf();
+        $body .= '<h2 class="wide">Configuratie wijzigen</h2>';
+        $body .= '<p class="wide">Waarden worden opgeslagen in `.env`. Laat wachtwoordvelden leeg om de huidige secret te behouden.</p>';
+        $body .= '<label>Applicatienaam<input name="APP_NAME" required value="' . $value('APP_NAME', (string) $this->settings['app_name']) . '"></label>';
+        $body .= '<label>Publieke URL<input name="APP_URL" required value="' . $value('APP_URL', (string) $this->settings['app_url']) . '"></label>';
+        $body .= '<label>Omgeving<select name="APP_ENV">' . $envOptions . '</select></label>';
+        $body .= '<label>Dataretentie dagen<input type="number" min="365" name="DATA_RETENTION_DAYS" value="' . $value('DATA_RETENTION_DAYS', (string) $this->settings['data_retention_days']) . '"></label>';
+
+        $body .= '<h3 class="wide">Database</h3>';
+        $body .= '<label>Host<input name="DB_HOST" required value="' . $value('DB_HOST', (string) $db['host']) . '"></label>';
+        $body .= '<label>Poort<input name="DB_PORT" required inputmode="numeric" value="' . $value('DB_PORT', (string) $db['port']) . '"></label>';
+        $body .= '<label>Database<input name="DB_DATABASE" required value="' . $value('DB_DATABASE', (string) $db['database']) . '"></label>';
+        $body .= '<label>Gebruiker<input name="DB_USERNAME" required value="' . $value('DB_USERNAME', (string) $db['username']) . '"></label>';
+        $body .= '<label>Wachtwoord<input type="password" name="DB_PASSWORD" autocomplete="new-password" placeholder="Leeg laten om te behouden"></label>';
+        $body .= '<label class="check"><input type="checkbox" name="clear_DB_PASSWORD" value="1"> Databasewachtwoord wissen</label>';
+
+        $body .= '<h3 class="wide">E-mail</h3>';
+        $body .= '<label>Afzender e-mail<input type="email" name="MAIL_FROM" required value="' . $value('MAIL_FROM', (string) $mail['from']) . '"></label>';
+        $body .= '<label>Afzender naam<input name="MAIL_FROM_NAME" value="' . $value('MAIL_FROM_NAME', (string) $mail['from_name']) . '"></label>';
+        $body .= '<label>SMTP host<input name="SMTP_HOST" value="' . $value('SMTP_HOST', (string) $mail['smtp_host']) . '"></label>';
+        $body .= '<label>SMTP poort<input name="SMTP_PORT" required inputmode="numeric" value="' . $value('SMTP_PORT', (string) $mail['smtp_port']) . '"></label>';
+        $body .= '<label>SMTP gebruiker<input name="SMTP_USERNAME" value="' . $value('SMTP_USERNAME', (string) $mail['smtp_username']) . '"></label>';
+        $body .= '<label>SMTP encryptie<select name="SMTP_ENCRYPTION">' . $encOptions . '</select></label>';
+        $body .= '<label>SMTP wachtwoord<input type="password" name="SMTP_PASSWORD" autocomplete="new-password" placeholder="Leeg laten om te behouden"></label>';
+        $body .= '<label class="check"><input type="checkbox" name="clear_SMTP_PASSWORD" value="1"> SMTP-wachtwoord wissen</label>';
+        $body .= '<h3 class="wide">IMAP intake</h3>';
+        $body .= '<label>Mailbox string<input name="IMAP_MAILBOX" value="' . $value('IMAP_MAILBOX', (string) ($imap['mailbox'] ?? '')) . '" placeholder="{imap.example.nl:993/imap/ssl}INBOX"></label>';
+        $body .= '<label>IMAP gebruiker<input name="IMAP_USERNAME" value="' . $value('IMAP_USERNAME', (string) ($imap['username'] ?? '')) . '"></label>';
+        $body .= '<label>Standaard categorie ID<input name="IMAP_DEFAULT_CATEGORY_ID" value="' . $value('IMAP_DEFAULT_CATEGORY_ID', (string) ($imap['default_category_id'] ?? '')) . '"></label>';
+        $body .= '<label>IMAP wachtwoord<input type="password" name="IMAP_PASSWORD" autocomplete="new-password" placeholder="Leeg laten om te behouden"></label>';
+        $body .= '<label class="check"><input type="checkbox" name="clear_IMAP_PASSWORD" value="1"> IMAP-wachtwoord wissen</label>';
+        $body .= '<h3 class="wide">AD/LDAPS</h3>';
+        $body .= '<label>AD host<input name="AD_HOST" value="' . $value('AD_HOST', (string) ($ad['host'] ?? '')) . '"></label>';
+        $body .= '<label>AD poort<input name="AD_PORT" inputmode="numeric" value="' . $value('AD_PORT', (string) ($ad['port'] ?? '636')) . '"></label>';
+        $body .= '<label>TLS<select name="AD_USE_TLS">' . $this->simpleOptions(['ldaps', 'starttls'], $value('AD_USE_TLS', (string) ($ad['use_tls'] ?? 'ldaps'))) . '</select></label>';
+        $body .= '<label>Base DN<input name="AD_BASE_DN" value="' . $value('AD_BASE_DN', (string) ($ad['base_dn'] ?? '')) . '"></label>';
+        $body .= '<label>Bind DN<input name="AD_BIND_DN" value="' . $value('AD_BIND_DN', (string) ($ad['bind_dn'] ?? '')) . '"></label>';
+        $body .= '<label>Bind wachtwoord<input type="password" name="AD_BIND_PASSWORD" autocomplete="new-password" placeholder="Leeg laten om te behouden"></label>';
+        $body .= '<label>User filter<input name="AD_USER_FILTER" value="' . $value('AD_USER_FILTER', (string) ($ad['user_filter'] ?? '')) . '"></label>';
+        $body .= '<label>Viewer groep DN<input name="AD_GROUP_VIEWER" value="' . $value('AD_GROUP_VIEWER', (string) ($ad['group_viewer'] ?? '')) . '"></label>';
+        $body .= '<label>Agent groep DN<input name="AD_GROUP_AGENT" value="' . $value('AD_GROUP_AGENT', (string) ($ad['group_agent'] ?? '')) . '"></label>';
+        $body .= '<label>Manager groep DN<input name="AD_GROUP_MANAGER" value="' . $value('AD_GROUP_MANAGER', (string) ($ad['group_manager'] ?? '')) . '"></label>';
+        $body .= '<label>Admin groep DN<input name="AD_GROUP_ADMIN" value="' . $value('AD_GROUP_ADMIN', (string) ($ad['group_admin'] ?? '')) . '"></label>';
+        $body .= '<label class="check wide"><input type="checkbox" name="clear_AD_BIND_PASSWORD" value="1"> AD bind-wachtwoord wissen</label>';
+        $body .= '<h3 class="wide">Thema</h3>';
+        $body .= '<label>Brandkleur<input name="THEME_BRAND" value="' . $this->e($this->appSetting('theme_brand', '')) . '" placeholder="#0f6d7a"></label>';
+        $body .= '<label>Accentkleur<input name="THEME_ACCENT" value="' . $this->e($this->appSetting('theme_accent', '')) . '" placeholder="#b7791f"></label>';
+        $body .= '<label>Darkmode standaard<select name="THEME_DARK">' . $this->simpleOptions(['', '1'], $this->appSetting('theme_dark', '')) . '</select></label>';
+        $body .= '<div class="wide actions"><button class="button">Configuratie opslaan</button></div></form>';
+        $body .= '<form class="panel" method="post" action="/admin/ad/test">' . $this->csrf() . '<h2>AD-connectietest</h2><p>Test bind/search zonder wachtwoorden te tonen.</p><button class="button secondary">Test AD-connectie</button></form>';
+
+        return $body;
+    }
+
+    private function testAdConnection(): void
+    {
+        $this->requireAdmin();
+        $this->verifyCsrf();
+        [$ok, $message] = $this->adConnectionTest();
+        $this->safeAudit('ad_connection_test', ['result' => $ok ? 'ok' : $message]);
+        $this->layout('AD-connectietest', '<section class="hero"><div><h1>AD-connectietest</h1><p>' . $this->e($ok ? 'ok' : $message) . '</p></div><a class="button" href="/admin/config">Terug</a></section>');
+    }
+
     private function filters(): string
     {
-        $agents = $this->db->query('SELECT id, name FROM users WHERE is_active = 1 ORDER BY name')->fetchAll();
+        $agents = $this->db->query('SELECT id, name FROM users WHERE is_active = 1 AND role IN ("agent","manager","admin") ORDER BY name')->fetchAll();
         $categories = $this->db->query('SELECT id, name FROM categories WHERE is_active = 1 ORDER BY name')->fetchAll();
         return '<form class="panel filters" method="get"><input name="q" placeholder="Zoek ticketnummer of trefwoord" value="' . $this->e((string) ($_GET['q'] ?? '')) . '"><select name="status"><option value="">Alle statussen</option>' . $this->simpleOptions(self::STATUSES, (string) ($_GET['status'] ?? '')) . '</select><select name="priority"><option value="">Alle prioriteiten</option>' . $this->simpleOptions(self::PRIORITIES, (string) ($_GET['priority'] ?? '')) . '</select><select name="category_id"><option value="">Alle categorieën</option>' . $this->options($categories, 'id', 'name', (string) ($_GET['category_id'] ?? '')) . '</select><select name="assigned_to"><option value="">Alle agents</option>' . $this->options($agents, 'id', 'name', (string) ($_GET['assigned_to'] ?? '')) . '</select><input type="date" name="date_from" value="' . $this->e((string) ($_GET['date_from'] ?? '')) . '"><input type="date" name="date_to" value="' . $this->e((string) ($_GET['date_to'] ?? '')) . '"><button class="button">Filter</button></form>';
     }
@@ -825,7 +1429,8 @@ final class App
         if ($where) {
             $sql .= ' WHERE ' . implode(' AND ', $where);
         }
-        $sql .= ' ORDER BY FIELD(t.priority,"kritiek","hoog","normaal","laag"), COALESCE(t.sla_deadline, t.created_at), t.created_at DESC LIMIT 200';
+        $limit = min(1000, max(1, (int) ($input['limit'] ?? 200)));
+        $sql .= ' ORDER BY FIELD(t.priority,"kritiek","hoog","normaal","laag"), COALESCE(t.sla_deadline, t.created_at), t.created_at DESC LIMIT ' . $limit;
         $stmt = $this->db->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll();
@@ -835,14 +1440,26 @@ final class App
     {
         $rows = '';
         foreach ($tickets as $t) {
-            $rows .= '<tr><td><a href="/tickets/' . (int) $t['id'] . '">' . $this->e($t['ticket_number']) . '</a><small>' . $this->e($t['subject']) . '</small></td><td>' . $this->badge($t['status']) . '</td><td>' . $this->priority($t['priority']) . '</td><td>' . $this->e($t['category_name'] ?? '') . '</td><td>' . $this->e($t['agent_name'] ?? 'Niet toegewezen') . '</td><td>' . $this->sla($t) . '</td></tr>';
+            $select = $actions ? '<td><input type="checkbox" name="ticket_ids[]" value="' . (int) $t['id'] . '" aria-label="Selecteer ticket"></td>' : '';
+            $rows .= '<tr>' . $select . '<td><a href="/tickets/' . (int) $t['id'] . '">' . $this->e($t['ticket_number']) . '</a><small>' . $this->e($t['subject']) . '</small></td><td>' . $this->badge($t['status']) . '</td><td>' . $this->priority($t['priority']) . '</td><td>' . $this->e($t['category_name'] ?? '') . '</td><td>' . $this->e($t['agent_name'] ?? 'Niet toegewezen') . '</td><td>' . $this->sla($t) . '</td></tr>';
         }
-        return '<table class="table"><tr><th>Ticket</th><th>Status</th><th>Prioriteit</th><th>Categorie</th><th>Agent</th><th>SLA</th></tr>' . ($rows ?: '<tr><td colspan="6">Geen tickets gevonden.</td></tr>') . '</table>';
+        $head = ($actions ? '<th></th>' : '') . '<th>Ticket</th><th>Status</th><th>Prioriteit</th><th>Categorie</th><th>Agent</th><th>SLA</th>';
+        $emptyColspan = $actions ? 7 : 6;
+        $table = '<table class="table"><tr>' . $head . '</tr>' . ($rows ?: '<tr><td colspan="' . $emptyColspan . '">Geen tickets gevonden.</td></tr>') . '</table>';
+        if (!$actions) {
+            return $table;
+        }
+        $agents = $this->db->query('SELECT id, name FROM users WHERE is_active = 1 AND role IN ("agent","manager","admin") ORDER BY name')->fetchAll();
+        $bulk = '<form class="panel quick" method="post" action="/tickets/bulk">' . $this->csrf();
+        $bulk .= '<label>Status<select name="bulk_status"><option value="">Niet wijzigen</option>' . $this->simpleOptions(self::STATUSES, '') . '</select></label>';
+        $bulk .= '<label>Toewijzen<select name="bulk_assigned_to"><option value="">Niet wijzigen</option>' . $this->options($agents, 'id', 'name') . '</select></label>';
+        $bulk .= '<button class="button">Bulkactie uitvoeren</button>' . $table . '</form>';
+        return $bulk;
     }
 
     private function agentActions(array $ticket): string
     {
-        $agents = $this->db->query('SELECT id, name FROM users WHERE is_active = 1 ORDER BY name')->fetchAll();
+        $agents = $this->db->query('SELECT id, name FROM users WHERE is_active = 1 AND role IN ("agent","manager","admin") ORDER BY name')->fetchAll();
         return '<section class="panel quick"><form method="post" action="/tickets/' . (int) $ticket['id'] . '/status">' . $this->csrf() . '<input type="hidden" name="_method" value="PATCH"><label>Status<select name="status">' . $this->simpleOptions(self::TRANSITIONS[$ticket['status']] ?? [], '') . '</select></label><button class="button">Wijzig</button></form><form method="post" action="/tickets/' . (int) $ticket['id'] . '/assign">' . $this->csrf() . '<input type="hidden" name="_method" value="PATCH"><label>Agent<select name="assigned_to"><option value="">Niet toegewezen</option>' . $this->options($agents, 'id', 'name', (string) ($ticket['assigned_to'] ?? '')) . '</select></label><button class="button">Toewijzen</button></form></section>';
     }
 
@@ -876,18 +1493,34 @@ final class App
     private function layout(string $title, string $body, bool $private = true): void
     {
         $user = $this->currentUser();
-        $nav = '<a class="skip-link" href="#main">Skip to main content</a><nav aria-label="Hoofdnavigatie"><a href="/">' . $this->e($this->settings['app_name']) . '</a><div>';
+        $nav = '<a class="skip-link" href="#main">Skip to main content</a><nav aria-label="Hoofdnavigatie"><a href="/">' . $this->e($this->settings['app_name']) . '</a><div><a href="/knowledge-base">Kennisbank</a>';
         if ($user) {
-            $nav .= '<a href="/dashboard">Dashboard</a><a href="/tickets">Tickets</a><a href="/profile">Profiel</a>';
-            if ($user['role'] === 'admin') {
-                $nav .= '<a href="/admin/users">Gebruikers</a><a href="/admin/categories">Categorieën</a><a href="/admin/sla">SLA</a><a href="/admin/templates">Templates</a><a href="/admin/reports">Rapportages</a><a href="/admin/audit">Auditlog</a>';
+            $nav .= '<a href="/dashboard">Dashboard</a><a href="/tickets">Tickets</a><a href="/tickets/new">Nieuw ticket</a><a href="/profile">Profiel</a>';
+            if ($this->hasMinimumRole($user, 'manager')) {
+                $nav .= '<a href="/admin/reports">Rapportages</a><a href="/admin/audit">Auditlog</a><a href="/admin/config">Config</a>';
             }
+            if ($user['role'] === 'admin') {
+                $nav .= '<a href="/admin/users">Gebruikers</a><a href="/admin/categories">Categorieën</a><a href="/admin/sla">SLA</a><a href="/admin/templates">Templates</a><a href="/admin/knowledge-base">KB beheer</a><a href="/admin/webhooks">Webhooks</a>';
+            }
+            $nav .= '<form method="post" action="/theme">' . $this->csrf() . '<button title="Thema wisselen">Thema</button></form>';
             $nav .= '<form method="post" action="/logout">' . $this->csrf() . '<button>Uitloggen</button></form>';
         } else {
+            $nav .= '<form method="post" action="/theme">' . $this->csrf() . '<button title="Thema wisselen">Thema</button></form>';
             $nav .= '<a href="/login">Login</a>';
         }
         $nav .= '</div></nav>';
-        echo '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' . $this->e($title) . '</title><link rel="stylesheet" href="/assets/css/app.css"></head><body>' . $nav . '<main id="main" tabindex="-1">' . $body . '</main><script src="/assets/js/app.js"></script></body></html>';
+        $theme = ($_COOKIE['theme'] ?? $this->appSetting('theme_dark', '')) === 'dark' || ($_COOKIE['theme'] ?? '') === 'dark' ? ' class="theme-dark"' : '';
+        $brand = $this->appSetting('theme_brand', '');
+        $accent = $this->appSetting('theme_accent', '');
+        $style = '';
+        if (preg_match('/^#[0-9a-fA-F]{6}$/', $brand)) {
+            $style .= '--brand:' . $brand . ';';
+        }
+        if (preg_match('/^#[0-9a-fA-F]{6}$/', $accent)) {
+            $style .= '--accent:' . $accent . ';';
+        }
+        $styleAttr = $style !== '' ? ' style="' . $this->e($style) . '"' : '';
+        echo '<!doctype html><html lang="nl"' . $theme . $styleAttr . '><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' . $this->e($title) . '</title><link rel="stylesheet" href="/assets/css/app.css"></head><body>' . $nav . '<main id="main" tabindex="-1">' . $body . '</main><script src="/assets/js/app.js"></script></body></html>';
     }
 
     private function requireUser(): array
@@ -908,6 +1541,41 @@ final class App
             exit;
         }
         return $user;
+    }
+
+    private function requireMinimumRole(string $role): array
+    {
+        $user = $this->requireUser();
+        if (!$this->hasMinimumRole($user, $role)) {
+            http_response_code(403);
+            $this->layout('Geen toegang', '<section class="panel danger"><h1>Geen toegang</h1></section>');
+            exit;
+        }
+        return $user;
+    }
+
+    private function hasMinimumRole(array $user, string $role): bool
+    {
+        return (self::ROLE_LEVELS[(string) ($user['role'] ?? 'viewer')] ?? 0) >= (self::ROLE_LEVELS[$role] ?? 999);
+    }
+
+    private function validRole(string $role): string
+    {
+        return array_key_exists($role, self::ROLES) ? $role : 'agent';
+    }
+
+    private function roleLabel(string $role): string
+    {
+        return self::ROLES[$role] ?? $role;
+    }
+
+    private function roleOptions(string $selected): string
+    {
+        $out = '';
+        foreach (self::ROLES as $value => $label) {
+            $out .= '<option value="' . $this->e($value) . '"' . ($value === $selected ? ' selected' : '') . '>' . $this->e($label) . '</option>';
+        }
+        return $out;
     }
 
     private function currentUser(): ?array
@@ -947,6 +1615,382 @@ final class App
     {
         $value = $_GET[$key] ?? null;
         return is_string($value) ? trim($value) : null;
+    }
+
+    private function readEnvFile(): array
+    {
+        $path = dirname(__DIR__) . '/.env';
+        $values = [];
+        if (!is_file($path)) {
+            return $values;
+        }
+
+        foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+            $line = trim((string) $line);
+            if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) {
+                continue;
+            }
+            [$key, $value] = explode('=', $line, 2);
+            $key = trim($key);
+            $value = trim($value);
+            if ($key === '') {
+                continue;
+            }
+            if ((str_starts_with($value, '"') && str_ends_with($value, '"')) || (str_starts_with($value, "'") && str_ends_with($value, "'"))) {
+                $value = substr($value, 1, -1);
+            }
+            $values[$key] = $value;
+        }
+
+        return $values;
+    }
+
+    private function writeEnvFile(array $values): void
+    {
+        $path = dirname(__DIR__) . '/.env';
+        $dir = dirname($path);
+        if (!is_dir($dir) || !is_writable($dir)) {
+            throw new \RuntimeException('.env-map kon niet worden benaderd.');
+        }
+        if (is_file($path) && !is_writable($path)) {
+            throw new \RuntimeException('.env-bestand is niet schrijfbaar.');
+        }
+
+        $orderedKeys = [
+            'APP_NAME',
+            'APP_URL',
+            'APP_ENV',
+            'DB_HOST',
+            'DB_PORT',
+            'DB_DATABASE',
+            'DB_USERNAME',
+            'DB_PASSWORD',
+            'MAIL_FROM',
+            'MAIL_FROM_NAME',
+            'SMTP_HOST',
+            'SMTP_PORT',
+            'SMTP_USERNAME',
+            'SMTP_PASSWORD',
+            'SMTP_ENCRYPTION',
+            'IMAP_MAILBOX',
+            'IMAP_USERNAME',
+            'IMAP_PASSWORD',
+            'IMAP_DEFAULT_CATEGORY_ID',
+            'AD_HOST',
+            'AD_PORT',
+            'AD_USE_TLS',
+            'AD_BASE_DN',
+            'AD_BIND_DN',
+            'AD_BIND_PASSWORD',
+            'AD_USER_FILTER',
+            'AD_GROUP_VIEWER',
+            'AD_GROUP_AGENT',
+            'AD_GROUP_MANAGER',
+            'AD_GROUP_ADMIN',
+            'DEFAULT_ADMIN_NAME',
+            'DEFAULT_ADMIN_EMAIL',
+            'DEFAULT_ADMIN_PASSWORD',
+            'DATA_RETENTION_DAYS',
+        ];
+
+        $lines = [];
+        foreach ($orderedKeys as $key) {
+            if (array_key_exists($key, $values)) {
+                $lines[] = $key . '=' . $this->formatEnvValue((string) $values[$key]);
+                unset($values[$key]);
+            }
+        }
+        foreach ($values as $key => $value) {
+            if (preg_match('/^[A-Z0-9_]+$/', (string) $key) === 1) {
+                $lines[] = (string) $key . '=' . $this->formatEnvValue((string) $value);
+            }
+        }
+
+        $tmp = tempnam($dir, '.env.');
+        if ($tmp === false || file_put_contents($tmp, implode(PHP_EOL, $lines) . PHP_EOL, LOCK_EX) === false) {
+            throw new \RuntimeException('.env kon niet worden geschreven.');
+        }
+        if (!rename($tmp, $path)) {
+            @unlink($tmp);
+            throw new \RuntimeException('.env kon niet worden vervangen.');
+        }
+    }
+
+    private function formatEnvValue(string $value): string
+    {
+        if ($value === '') {
+            return '';
+        }
+        if (preg_match('/^[A-Za-z0-9_@.\\/:+-]+$/', $value) === 1) {
+            return $value;
+        }
+
+        return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"';
+    }
+
+    private function appSetting(string $key, string $default = ''): string
+    {
+        try {
+            $stmt = $this->db->prepare('SELECT setting_value FROM app_settings WHERE setting_key = ?');
+            $stmt->execute([$key]);
+            $value = $stmt->fetchColumn();
+            return $value === false || $value === null || $value === '' ? $default : (string) $value;
+        } catch (Throwable) {
+            return $default;
+        }
+    }
+
+    private function setAppSetting(string $key, string $value): void
+    {
+        if (!preg_match('/^[a-z0-9_]+$/', $key)) {
+            return;
+        }
+        try {
+            $this->db->prepare('INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)')->execute([$key, $value]);
+        } catch (Throwable) {
+            // Migratie 006 moet bestaan voor thema-instellingen; config opslaan mag niet blokkeren.
+        }
+    }
+
+    private function safeAudit(string $action, array $details = []): void
+    {
+        try {
+            $ticketId = (int) ($this->db->query('SELECT id FROM tickets ORDER BY id LIMIT 1')->fetchColumn() ?: 0);
+            if ($ticketId > 0) {
+                $user = $this->currentUser();
+                $this->audit($ticketId, $user['id'] ?? null, $user['name'] ?? 'Systeem', $action, $details);
+            }
+        } catch (Throwable) {
+            // Systeemevents zonder ticket mogen de hoofdactie niet blokkeren.
+        }
+    }
+
+    private function ensureCsatSurvey(int $ticketId): string
+    {
+        $stmt = $this->db->prepare('SELECT token FROM csat_surveys WHERE ticket_id = ? LIMIT 1');
+        $stmt->execute([$ticketId]);
+        $token = $stmt->fetchColumn();
+        if (!$token) {
+            $token = bin2hex(random_bytes(32));
+            $this->db->prepare('INSERT INTO csat_surveys (ticket_id, token, sent_at) VALUES (?, ?, NOW())')->execute([$ticketId, $token]);
+        } else {
+            $this->db->prepare('UPDATE csat_surveys SET sent_at = COALESCE(sent_at, NOW()) WHERE token = ?')->execute([$token]);
+        }
+        return rtrim((string) $this->settings['app_url'], '/') . '/csat/' . $token;
+    }
+
+    private function csatByToken(string $token): array
+    {
+        $stmt = $this->db->prepare('SELECT * FROM csat_surveys WHERE token = ?');
+        $stmt->execute([$token]);
+        $survey = $stmt->fetch();
+        if (!$survey) {
+            $this->notFound();
+        }
+        return $survey;
+    }
+
+    private function timeEntriesPanel(int $ticketId): string
+    {
+        $rows = '';
+        $total = 0;
+        $stmt = $this->db->prepare('SELECT te.*, u.name user_name FROM ticket_time_entries te JOIN users u ON u.id = te.user_id WHERE te.ticket_id = ? ORDER BY te.created_at DESC');
+        $stmt->execute([$ticketId]);
+        foreach ($stmt->fetchAll() as $entry) {
+            $total += (int) $entry['minutes'];
+            $rows .= '<tr><td>' . $this->e($entry['created_at']) . '</td><td>' . $this->e($entry['user_name']) . '</td><td>' . (int) $entry['minutes'] . '</td><td>' . $this->e((string) $entry['note']) . '</td></tr>';
+        }
+        $body = '<section class="panel"><h2>Tijdregistratie</h2><p>Totaal: ' . round($total / 60, 2) . ' uur</p>';
+        $body .= '<form class="quick" method="post" action="/tickets/' . $ticketId . '/time">' . $this->csrf() . '<label>Minuten<input type="number" min="1" name="minutes" required></label><label>Notitie<input name="note"></label><button class="button">Tijd boeken</button></form>';
+        $body .= '<table class="table"><tr><th>Tijd</th><th>Gebruiker</th><th>Minuten</th><th>Notitie</th></tr>' . ($rows ?: '<tr><td colspan="4">Nog geen tijd geboekt.</td></tr>') . '</table></section>';
+        return $body;
+    }
+
+    private function simplePdf(string $text): string
+    {
+        $safe = str_replace(["\\", "(", ")"], ["\\\\", "\\(", "\\)"], $text);
+        $stream = "BT /F1 10 Tf 40 790 Td ";
+        foreach (explode("\n", $safe) as $line) {
+            $stream .= '(' . mb_substr($line, 0, 120) . ') Tj 0 -14 Td ';
+        }
+        $stream .= 'ET';
+        $objects = [
+            '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+            '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+            '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj',
+            '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
+            '5 0 obj << /Length ' . strlen($stream) . ' >> stream' . "\n" . $stream . "\nendstream endobj",
+        ];
+        $pdf = "%PDF-1.4\n";
+        $offsets = [0];
+        foreach ($objects as $object) {
+            $offsets[] = strlen($pdf);
+            $pdf .= $object . "\n";
+        }
+        $xref = strlen($pdf);
+        $pdf .= "xref\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
+        foreach (array_slice($offsets, 1) as $offset) {
+            $pdf .= sprintf("%010d 00000 n \n", $offset);
+        }
+        return $pdf . "trailer << /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n{$xref}\n%%EOF";
+    }
+
+    private function uniqueSlug(string $title): string
+    {
+        $ascii = function_exists('iconv') ? (iconv('UTF-8', 'ASCII//TRANSLIT', $title) ?: $title) : $title;
+        $base = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower($ascii)), '-');
+        $base = $base !== '' ? $base : 'artikel';
+        $slug = $base;
+        $i = 2;
+        while (true) {
+            $stmt = $this->db->prepare('SELECT COUNT(*) FROM knowledge_articles WHERE slug = ?');
+            $stmt->execute([$slug]);
+            if ((int) $stmt->fetchColumn() === 0) {
+                return $slug;
+            }
+            $slug = $base . '-' . $i++;
+        }
+    }
+
+    private function defaultCategoryId(): int
+    {
+        return (int) ($this->db->query('SELECT id FROM categories WHERE is_active = 1 ORDER BY id LIMIT 1')->fetchColumn() ?: 1);
+    }
+
+    private function attemptAdLogin(string $email, string $password): ?array
+    {
+        $ad = $this->settings['ad'] ?? [];
+        if (($ad['host'] ?? '') === '' || $password === '' || !function_exists('ldap_connect')) {
+            return null;
+        }
+        [$ok, $data] = $this->adBindAndSearch($email, $password);
+        if (!$ok || !is_array($data)) {
+            $this->safeAudit('ad_login_failed', ['actor' => $email, 'result' => is_string($data) ? $data : 'failed']);
+            return null;
+        }
+        $role = $this->adRoleFromGroups($data['groups'] ?? []);
+        if ($role === null) {
+            $this->safeAudit('ad_login_failed', ['actor' => $email, 'result' => 'no_group_mapping']);
+            return null;
+        }
+        $stmt = $this->db->prepare('SELECT * FROM users WHERE email = ?');
+        $stmt->execute([$email]);
+        $user = $stmt->fetch();
+        if ($user) {
+            $this->db->prepare('UPDATE users SET name = ?, role = ?, is_active = 1 WHERE id = ?')->execute([$data['name'] ?: $email, $role, $user['id']]);
+            $stmt->execute([$email]);
+            $user = $stmt->fetch();
+        } else {
+            $this->db->prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')->execute([$data['name'] ?: $email, $email, password_hash(bin2hex(random_bytes(20)), PASSWORD_BCRYPT), $role]);
+            $stmt->execute([$email]);
+            $user = $stmt->fetch();
+        }
+        $this->safeAudit('ad_login_success', ['actor' => $email, 'role' => $role]);
+        return $user ?: null;
+    }
+
+    private function adConnectionTest(): array
+    {
+        if (!function_exists('ldap_connect')) {
+            return [false, 'ldap_extension_missing'];
+        }
+        $ad = $this->settings['ad'] ?? [];
+        if (($ad['host'] ?? '') === '' || ($ad['bind_dn'] ?? '') === '') {
+            return [false, 'not_configured'];
+        }
+        $conn = $this->ldapConnection();
+        if (!$conn) {
+            return [false, 'connection_failed'];
+        }
+        if (!@ldap_bind($conn, (string) $ad['bind_dn'], (string) ($ad['bind_password'] ?? ''))) {
+            return [false, 'bind_failed'];
+        }
+        return [true, 'ok'];
+    }
+
+    private function adBindAndSearch(string $username, string $password): array
+    {
+        $ad = $this->settings['ad'] ?? [];
+        $conn = $this->ldapConnection();
+        if (!$conn) {
+            return [false, 'connection_failed'];
+        }
+        if (($ad['bind_dn'] ?? '') !== '' && !@ldap_bind($conn, (string) $ad['bind_dn'], (string) ($ad['bind_password'] ?? ''))) {
+            return [false, 'service_bind_failed'];
+        }
+        $account = str_contains($username, '@') ? strstr($username, '@', true) : $username;
+        $filter = str_replace(['{username}', '{email}'], [ldap_escape((string) $account, '', LDAP_ESCAPE_FILTER), ldap_escape($username, '', LDAP_ESCAPE_FILTER)], (string) ($ad['user_filter'] ?? '(sAMAccountName={username})'));
+        $search = @ldap_search($conn, (string) ($ad['base_dn'] ?? ''), $filter, ['dn', 'cn', 'mail', 'memberOf']);
+        if (!$search) {
+            return [false, 'user_search_failed'];
+        }
+        $entries = ldap_get_entries($conn, $search);
+        if (($entries['count'] ?? 0) < 1) {
+            return [false, 'user_not_found'];
+        }
+        $dn = (string) $entries[0]['dn'];
+        if (!@ldap_bind($conn, $dn, $password)) {
+            return [false, 'user_bind_failed'];
+        }
+        $groups = [];
+        foreach (($entries[0]['memberof'] ?? []) as $key => $value) {
+            if (is_int($key)) {
+                $groups[] = (string) $value;
+            }
+        }
+        return [true, ['dn' => $dn, 'name' => (string) ($entries[0]['cn'][0] ?? $username), 'groups' => $groups]];
+    }
+
+    private function adChangePassword(string $username, string $current, string $new): array
+    {
+        $ad = $this->settings['ad'] ?? [];
+        if (($ad['use_tls'] ?? 'ldaps') === '' || !in_array($ad['use_tls'], ['ldaps', 'starttls'], true)) {
+            return [false, 'tls_required'];
+        }
+        if (!function_exists('ldap_connect')) {
+            return [false, 'ldap_extension_missing'];
+        }
+        [$ok, $data] = $this->adBindAndSearch($username, $current);
+        if (!$ok || !is_array($data)) {
+            return [false, is_string($data) ? $data : 'bind_failed'];
+        }
+        $conn = $this->ldapConnection();
+        if (!$conn || !@ldap_bind($conn, (string) $data['dn'], $current)) {
+            return [false, 'bind_failed'];
+        }
+        $encoded = mb_convert_encoding('"' . $new . '"', 'UTF-16LE', 'UTF-8');
+        if (!@ldap_modify($conn, (string) $data['dn'], ['unicodePwd' => $encoded])) {
+            return [false, 'policy_violation'];
+        }
+        return [true, 'ok'];
+    }
+
+    private function ldapConnection()
+    {
+        $ad = $this->settings['ad'] ?? [];
+        $scheme = ($ad['use_tls'] ?? 'ldaps') === 'ldaps' ? 'ldaps://' : 'ldap://';
+        $conn = @ldap_connect($scheme . (string) ($ad['host'] ?? ''), (int) ($ad['port'] ?? 636));
+        if (!$conn) {
+            return false;
+        }
+        ldap_set_option($conn, LDAP_OPT_PROTOCOL_VERSION, 3);
+        ldap_set_option($conn, LDAP_OPT_REFERRALS, 0);
+        if (($ad['use_tls'] ?? '') === 'starttls' && !@ldap_start_tls($conn)) {
+            return false;
+        }
+        return $conn;
+    }
+
+    private function adRoleFromGroups(array $groups): ?string
+    {
+        $ad = $this->settings['ad'] ?? [];
+        foreach (['admin', 'manager', 'agent', 'viewer'] as $role) {
+            $dn = (string) ($ad['group_' . $role] ?? '');
+            if ($dn !== '' && in_array(strtolower($dn), array_map('strtolower', $groups), true)) {
+                return $role;
+            }
+        }
+        return null;
     }
 
     private function storeAttachment(int $ticketId, ?int $replyId): void
@@ -1091,6 +2135,7 @@ final class App
             $body = $this->renderMail($template['body_html'], $ticket);
             $this->logMail($event, (string) $recipient, $subject, $body);
         }
+        $this->dispatchWebhooks($event, $ticket);
     }
 
     private function logMail(string $event, string $recipient, string $subject, string $body): void
@@ -1147,8 +2192,56 @@ final class App
             '{{ agent.name }}' => $ticket['agent_name'] ?? '',
             '{{ site.name }}' => $this->settings['app_name'],
             '{{ site.url }}' => $this->settings['app_url'],
+            '{{ csat.link }}' => $ticket['csat_link'] ?? '',
         ];
         return strtr($text, $vars);
+    }
+
+    private function dispatchWebhooks(string $event, array $ticket): void
+    {
+        try {
+            $hooks = $this->db->query('SELECT * FROM webhook_endpoints WHERE is_active = 1')->fetchAll();
+        } catch (Throwable) {
+            return;
+        }
+        foreach ($hooks as $hook) {
+            $events = array_map('trim', explode(',', (string) $hook['events']));
+            if (!in_array('*', $events, true) && !in_array($event, $events, true)) {
+                continue;
+            }
+            $payload = json_encode([
+                'event' => $event,
+                'ticket' => [
+                    'number' => $ticket['ticket_number'] ?? '',
+                    'subject' => $ticket['subject'] ?? '',
+                    'status' => $ticket['status'] ?? '',
+                    'priority' => $ticket['priority'] ?? '',
+                    'url' => rtrim((string) $this->settings['app_url'], '/') . '/tickets/' . ($ticket['id'] ?? ''),
+                ],
+            ]);
+            $status = null;
+            $error = null;
+            try {
+                $ch = curl_init((string) $hook['url']);
+                if ($ch === false) {
+                    throw new \RuntimeException('curl_init_failed');
+                }
+                curl_setopt_array($ch, [
+                    CURLOPT_POST => true,
+                    CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                    CURLOPT_POSTFIELDS => $payload,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => 5,
+                ]);
+                curl_exec($ch);
+                $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: null;
+                $error = curl_error($ch) ?: null;
+                curl_close($ch);
+            } catch (Throwable $e) {
+                $error = $e->getMessage();
+            }
+            $this->db->prepare('INSERT INTO webhook_logs (endpoint_id, event_type, status_code, error) VALUES (?, ?, ?, ?)')->execute([$hook['id'], $event, $status, $error]);
+        }
     }
 
     private function adminEmails(): array

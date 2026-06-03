@@ -20,6 +20,7 @@
     "seed": "php seed.php",
     "retention-cleanup": "php retention_cleanup.php",
     "sla-check": "php sla_check.php",
+    "imap-intake": "php imap_intake.php",
     "smtp-test": "php smtp_test.php",
     "seed-performance": "php scripts/seed-performance.php",
     "serve": "php -S 127.0.0.1:8080 -t public"

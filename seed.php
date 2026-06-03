@@ -40,7 +40,7 @@ $templates = [
     'status_changed' => ['Status gewijzigd: {{ ticket.number }}', '<p>De status van {{ ticket.number }} is gewijzigd naar {{ ticket.status }}.</p>'],
     'sla_warning' => ['SLA-waarschuwing {{ ticket.number }}', '<p>Ticket {{ ticket.number }} nadert de SLA-deadline.</p>'],
     'sla_breach' => ['SLA overschreden {{ ticket.number }}', '<p>Ticket {{ ticket.number }} heeft de SLA overschreden.</p>'],
-    'ticket_closed' => ['Ticket gesloten {{ ticket.number }}', '<p>Ticket {{ ticket.number }} is gesloten.</p>'],
+    'ticket_closed' => ['Ticket gesloten {{ ticket.number }}', '<p>Ticket {{ ticket.number }} is gesloten.</p><p>Beoordeel onze afhandeling: <a href="{{ csat.link }}">CSAT invullen</a></p>'],
 ];
 foreach ($templates as $event => [$subject, $body]) {
     $stmt = $pdo->prepare('INSERT INTO email_templates (event_type, subject, body_html) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE subject=VALUES(subject), body_html=VALUES(body_html)');
@@ -52,5 +52,17 @@ $adminEmail = env_value('DEFAULT_ADMIN_EMAIL', 'admin@example.nl');
 $adminPassword = env_value('DEFAULT_ADMIN_PASSWORD', 'ChangeMe123!');
 $stmt = $pdo->prepare('INSERT IGNORE INTO users (name, email, password_hash, role) VALUES (?, ?, ?, "admin")');
 $stmt->execute([$adminName, $adminEmail, password_hash((string) $adminPassword, PASSWORD_BCRYPT)]);
+
+if ($pdo->query("SHOW TABLES LIKE 'knowledge_articles'")->fetchColumn()) {
+    $categoryId = (int) ($pdo->query('SELECT id FROM categories ORDER BY id LIMIT 1')->fetchColumn() ?: 1);
+    $articles = [
+        ['ticket-volgen', 'Hoe volg ik mijn ticket?', 'Gebruik de persoonlijke link uit de bevestigingsmail om status en reacties te bekijken.'],
+        ['bijlage-toevoegen', 'Hoe voeg ik een bijlage toe?', 'Voeg PNG, JPG, PDF, ZIP of LOG-bestanden toe bij het aanmaken van een ticket of bij een reactie.'],
+    ];
+    foreach ($articles as [$slug, $title, $body]) {
+        $stmt = $pdo->prepare('INSERT IGNORE INTO knowledge_articles (category_id, title, slug, body, is_published) VALUES (?, ?, ?, ?, 1)');
+        $stmt->execute([$categoryId, $title, $slug, $body]);
+    }
+}
 
 echo "Seed voltooid. Admin: {$adminEmail}" . PHP_EOL;

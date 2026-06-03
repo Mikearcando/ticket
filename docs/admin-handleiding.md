@@ -49,12 +49,12 @@ Praktische werkwijze:
 
 ## Gebruikersbeheer
 
-Admins beheren agents en andere admins via `/admin/users`.
+Admins beheren gebruikers en rollen via `/admin/users`.
 
 Aanbevolen regels:
 
 - Gebruik voor iedere medewerker een eigen account.
-- Geef alleen beheerders de rol `admin`.
+- Geef alleen systeembeheerders de rol `admin`.
 - Open een bestaande gebruiker via de naam in de tabel om naam, e-mail, rol, status, notificatievoorkeur of wachtwoord te wijzigen.
 - Deactiveer accounts van vertrokken medewerkers in plaats van ze te hergebruiken.
 - Laat wachtwoorden nooit per e-mail of chat rondgaan; gebruik een resetlink of een tijdelijk wachtwoord dat direct wordt gewijzigd.
@@ -62,8 +62,10 @@ Aanbevolen regels:
 
 Rollen:
 
+- `viewer`: tickets, tijdlijn en bijlagen bekijken zonder tickets te wijzigen.
 - `agent`: tickets behandelen, toewijzen, reageren en sluiten.
-- `admin`: alles wat een agent kan, plus gebruikers, categorieen, SLA, templates en rapportages beheren.
+- `manager`: alles wat een agent kan, plus rapportages, auditlog en configuratiestatus bekijken.
+- `admin`: alles wat een manager kan, plus gebruikers, categorieen, SLA-instellingen en e-mailsjablonen beheren.
 
 ## Categorieen beheren
 
@@ -173,6 +175,22 @@ Gebruik `/admin/audit` om ticketacties te controleren. De viewer toont onder mee
 - SLA-waarschuwingen en SLA-overschrijdingen.
 
 Filter op ticketnummer of actietype bij incidentonderzoek of SLA-discussies.
+
+## Configuratie
+
+Gebruik `/admin/config` om runtime-instellingen te controleren zonder geheime waarden te tonen. Managers kunnen deze status bekijken. Admins kunnen applicatie-, database-, SMTP- en retentie-instellingen via de web-UI aanpassen; wachtwoordvelden blijven leeg en behouden de bestaande secret tenzij expliciet een nieuwe waarde wordt ingevuld of de wisoptie wordt aangevinkt. Herstart daarna de applicatiecontainer of webserver als de runtime de waarden al had geladen.
+
+## P1-functies
+
+- Kennisbank: beheer artikelen via `/admin/knowledge-base`; klanten lezen ze via `/knowledge-base`.
+- Bulkacties: selecteer tickets in `/tickets` en wijzig status of toewijzing in een keer.
+- Tijdregistratie: boek minuten op de ticketdetailpagina.
+- CSAT: bij sluiten van een ticket wordt een beoordelingslink meegestuurd.
+- Exports: download CSV of PDF via `/admin/reports`.
+- Webhooks: beheer Teams/Slack/eigen endpoints via `/admin/webhooks`.
+- IMAP-intake: configureer IMAP via `/admin/config` en draai `php imap_intake.php`.
+- AD/LDAPS: configureer host, bind-account en group mapping via `/admin/config`; test de verbinding op dezelfde pagina.
+- Thema: stel brand/accentkleur in via `/admin/config`; gebruikers kunnen in de navigatie darkmode wisselen.
 
 ## Veilig beheer
 
