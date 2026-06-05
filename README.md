@@ -31,8 +31,13 @@ Voor ervaren gebruikers die Docker hebben draaien:
 git clone https://github.com/Mikearcando/ticket.git && cd ticket
 docker compose up -d --build
 docker compose exec app php migrate.php
+<<<<<<< HEAD
 docker compose exec app php seed.php  # optioneel: demodata
 # Open http://127.0.0.1:8081 — standaard login: admin@example.nl / ChangeMe123!
+=======
+docker compose exec app php seed.php
+# Open http://127.0.0.1:8081 — log in met DEFAULT_ADMIN_EMAIL uit .env
+>>>>>>> 15e7d0a946894b25091134ffc0092b2ce75589c8
 ```
 
 Rooktest:
@@ -132,6 +137,7 @@ docker compose exec app php seed.php
 http://127.0.0.1:8081
 ```
 
+<<<<<<< HEAD
 > **Standaard login (Docker):** `admin@example.nl` / `ChangeMe123!` — afkomstig uit `docker-compose.yml`. Wijzig dit wachtwoord direct na de eerste login via `/profile`.
 
 6. Rooktest (optioneel).
@@ -140,6 +146,8 @@ http://127.0.0.1:8081
 .\scripts\smoke-test.ps1 -BaseUrl http://127.0.0.1:8081
 ```
 
+=======
+>>>>>>> 15e7d0a946894b25091134ffc0092b2ce75589c8
 ---
 
 ## Handmatige Installatie
@@ -226,9 +234,13 @@ http://127.0.0.1:8080
 ## Eerste Login
 
 1. Ga naar `/login`.
+<<<<<<< HEAD
 2. Log in met de admin-credentials:
    - **Docker:** standaard `admin@example.nl` / `ChangeMe123!` (hardcoded in `docker-compose.yml`)
    - **Handmatig:** de waarden van `DEFAULT_ADMIN_EMAIL` en `DEFAULT_ADMIN_PASSWORD` uit `.env`
+=======
+2. Log in met `DEFAULT_ADMIN_EMAIL` en `DEFAULT_ADMIN_PASSWORD` uit `.env`.
+>>>>>>> 15e7d0a946894b25091134ffc0092b2ce75589c8
 3. Wijzig het tijdelijke wachtwoord direct via `/profile`.
 
 ---
@@ -353,7 +365,11 @@ Test de verbinding na configuratie via `/admin/config`.
 Doorloop deze punten voordat de applicatie in productie gaat.
 
 **Beveiliging**
+<<<<<<< HEAD
 - [ ] Configuratiebestand is beveiligd: bij handmatige installatie is `.env` ingevuld en buiten de webroot; bij Docker zijn de standaardcredentials in `docker-compose.yml` vervangen door sterke waarden
+=======
+- [ ] `.env` is ingevuld en niet publiek toegankelijk (buiten de webroot)
+>>>>>>> 15e7d0a946894b25091134ffc0092b2ce75589c8
 - [ ] `APP_ENV=production` is ingesteld
 - [ ] HTTPS is actief op de domeinnaam
 - [ ] Het eerste admin-wachtwoord is gewijzigd via `/profile`
