@@ -31,8 +31,8 @@ Voor ervaren gebruikers die Docker hebben draaien:
 git clone https://github.com/Mikearcando/ticket.git && cd ticket
 docker compose up -d --build
 docker compose exec app php migrate.php
-docker compose exec app php seed.php
-# Open http://127.0.0.1:8081 — log in met DEFAULT_ADMIN_EMAIL uit .env
+docker compose exec app php seed.php  # optioneel: demodata
+# Open http://127.0.0.1:8081 — standaard login: admin@example.nl / ChangeMe123!
 ```
 
 Rooktest:
@@ -132,6 +132,14 @@ docker compose exec app php seed.php
 http://127.0.0.1:8081
 ```
 
+> **Standaard login (Docker):** `admin@example.nl` / `ChangeMe123!` — afkomstig uit `docker-compose.yml`. Wijzig dit wachtwoord direct na de eerste login via `/profile`.
+
+6. Rooktest (optioneel).
+
+```powershell
+.\scripts\smoke-test.ps1 -BaseUrl http://127.0.0.1:8081
+```
+
 ---
 
 ## Handmatige Installatie
@@ -218,7 +226,9 @@ http://127.0.0.1:8080
 ## Eerste Login
 
 1. Ga naar `/login`.
-2. Log in met `DEFAULT_ADMIN_EMAIL` en `DEFAULT_ADMIN_PASSWORD` uit `.env`.
+2. Log in met de admin-credentials:
+   - **Docker:** standaard `admin@example.nl` / `ChangeMe123!` (hardcoded in `docker-compose.yml`)
+   - **Handmatig:** de waarden van `DEFAULT_ADMIN_EMAIL` en `DEFAULT_ADMIN_PASSWORD` uit `.env`
 3. Wijzig het tijdelijke wachtwoord direct via `/profile`.
 
 ---
@@ -343,7 +353,7 @@ Test de verbinding na configuratie via `/admin/config`.
 Doorloop deze punten voordat de applicatie in productie gaat.
 
 **Beveiliging**
-- [ ] `.env` is ingevuld en niet publiek toegankelijk (buiten de webroot)
+- [ ] Configuratiebestand is beveiligd: bij handmatige installatie is `.env` ingevuld en buiten de webroot; bij Docker zijn de standaardcredentials in `docker-compose.yml` vervangen door sterke waarden
 - [ ] `APP_ENV=production` is ingesteld
 - [ ] HTTPS is actief op de domeinnaam
 - [ ] Het eerste admin-wachtwoord is gewijzigd via `/profile`
