@@ -648,7 +648,7 @@ final class App
         $new = $this->countWhere('status = "nieuw"');
         $waiting = $this->countWhere('status = "wachtend_op_klant"');
         $open = $this->countWhere('status NOT IN ("opgelost","gesloten")');
-        $body = '<section class="hero"><div><h1>Dashboard</h1><p>Werkvoorraad en SLA-signalen</p></div><a class="button" href="/tickets">Tickets</a></section>';
+        $body = '<section class="hero"><div><h1>Dashboard</h1><p>Werkvoorraad en SLA-signalen in een eenvoudig overzicht.</p></div><div class="actions"><a class="button" href="/tickets">Tickets</a><a class="button secondary" href="/tickets/new">Nieuw ticket</a></div></section>';
         $body .= '<section class="kpis"><div><b>' . $mine . '</b><span>Mijn open tickets</span></div><div><b>' . $new . '</b><span>Onbehandeld</span></div><div><b>' . $waiting . '</b><span>Wachtend op klant</span></div><div><b>' . $open . '</b><span>Totaal open</span></div></section>';
         if ($this->hasMinimumRole($user, 'manager')) {
             $body .= $this->managerDashboardKpis();
@@ -681,7 +681,7 @@ final class App
             $agentRows .= '<tr><td>' . $this->e($row['agent']) . '</td><td>' . (int) $row['total'] . '</td></tr>';
         }
         $body = '<section class="kpis manager-kpis"><div><b>' . round((float) $avgFirst, 1) . '</b><span>Gem. eerste reactietijd uren</span></div><div><b>' . $slaOk . '%</b><span>SLA-naleving</span></div></section>';
-        $body .= '<table class="table"><tr><th>Agent</th><th>Tickets</th></tr>' . ($agentRows ?: '<tr><td colspan="2">Geen tickets.</td></tr>') . '</table>';
+        $body .= '<section class="panel"><h2>Werkverdeling</h2><table class="table"><tr><th>Agent</th><th>Tickets</th></tr>' . ($agentRows ?: '<tr><td colspan="2">Geen tickets.</td></tr>') . '</table></section>';
         return $body;
     }
 
