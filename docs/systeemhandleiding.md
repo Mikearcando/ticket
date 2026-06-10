@@ -109,14 +109,14 @@ docker compose exec app php seed.php
 http://127.0.0.1:8081
 ```
 
-6. Log in met de standaard Docker-admin.
+6. Log in met de lokale Docker-admin.
 
 ```text
 E-mail: admin@example.nl
-Wachtwoord: ChangeMe123!
+Wachtwoord: de waarde van `DEFAULT_ADMIN_PASSWORD` in `docker-compose.yml` of je lokale `.env`
 ```
 
-Wijzig dit wachtwoord direct via `/profile`.
+Deze standaardlogin is alleen bedoeld voor lokale controle. Wijzig dit wachtwoord direct via `/profile` en gebruik voor productie altijd een eigen sterk tijdelijk wachtwoord.
 
 ### Docker beheren
 
@@ -240,7 +240,7 @@ SMTP_ENCRYPTION=tls
 
 DEFAULT_ADMIN_NAME=Admin
 DEFAULT_ADMIN_EMAIL=admin@example.nl
-DEFAULT_ADMIN_PASSWORD=ChangeMe123!
+DEFAULT_ADMIN_PASSWORD=vervang-door-sterk-tijdelijk-wachtwoord
 DATA_RETENTION_DAYS=365
 ```
 
@@ -272,7 +272,6 @@ De seed maakt onder andere:
 - Standaardcategorieen: Hardware, Software, Netwerk en Overig.
 - SLA-regels voor `laag`, `normaal`, `hoog` en `kritiek`.
 - Standaard e-mailsjablonen.
-- Voorbeeldartikelen in de kennisbank als de migraties daarvoor aanwezig zijn.
 
 ### Webserver instellen
 
@@ -917,6 +916,7 @@ Webhookresultaten worden gelogd in `webhook_logs`.
 | `php retention_cleanup.php` | Gesloten tickets buiten retentie verwijderen. |
 | `php imap_intake.php` | Inkomende e-mail verwerken. |
 | `php smtp_test.php <email>` | SMTP testen. |
+| `php scripts/prepare-production.php --yes` | Lokale runtime/testdata verwijderen en basisdata resetten voor productievoorbereiding. |
 
 Via Composer:
 
@@ -927,7 +927,10 @@ composer sla-check
 composer retention-cleanup
 composer imap-intake
 composer smtp-test
+composer prepare-production
 ```
+
+Gebruik `prepare-production` alleen wanneer je bewust alle tickets, reacties, logs, resetlinks, CSAT, testgebruikers, testcategorieen en demo-kennisbankartikelen uit de huidige database wilt verwijderen. Het script behoudt het geconfigureerde adminaccount, zet de vier standaardcategorieen terug en leegt `storage/attachments/`.
 
 ### Aanbevolen cronjobs
 

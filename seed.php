@@ -49,20 +49,26 @@ foreach ($templates as $event => [$subject, $body]) {
 
 $adminName = env_value('DEFAULT_ADMIN_NAME', 'Admin');
 $adminEmail = env_value('DEFAULT_ADMIN_EMAIL', 'admin@example.nl');
-$adminPassword = env_value('DEFAULT_ADMIN_PASSWORD', 'ChangeMe123!');
+$appEnv = (string) ($settings['app_env'] ?? 'production');
+$adminPassword = env_value('DEFAULT_ADMIN_PASSWORD', $appEnv === 'production' ? null : 'ChangeMe123!');
+if ($appEnv === 'production' && !isProductionAdminPasswordAllowed($adminPassword)) {
+    fwrite(STDERR, "DEFAULT_ADMIN_PASSWORD must be a real temporary password of at least 10 characters in production.\n");
+    exit(1);
+}
 $stmt = $pdo->prepare('INSERT IGNORE INTO users (name, email, password_hash, role) VALUES (?, ?, ?, "admin")');
 $stmt->execute([$adminName, $adminEmail, password_hash((string) $adminPassword, PASSWORD_BCRYPT)]);
 
-if ($pdo->query("SHOW TABLES LIKE 'knowledge_articles'")->fetchColumn()) {
-    $categoryId = (int) ($pdo->query('SELECT id FROM categories ORDER BY id LIMIT 1')->fetchColumn() ?: 1);
-    $articles = [
-        ['ticket-volgen', 'Hoe volg ik mijn ticket?', 'Gebruik de persoonlijke link uit de bevestigingsmail om status en reacties te bekijken.'],
-        ['bijlage-toevoegen', 'Hoe voeg ik een bijlage toe?', 'Voeg PNG, JPG, PDF, ZIP of LOG-bestanden toe bij het aanmaken van een ticket of bij een reactie.'],
-    ];
-    foreach ($articles as [$slug, $title, $body]) {
-        $stmt = $pdo->prepare('INSERT IGNORE INTO knowledge_articles (category_id, title, slug, body, is_published) VALUES (?, ?, ?, ?, 1)');
-        $stmt->execute([$categoryId, $title, $slug, $body]);
-    }
-}
-
 echo "Seed voltooid. Admin: {$adminEmail}" . PHP_EOL;
+
+function isProductionAdminPasswordAllowed(?string $password): bool
+{
+    if ($password === null || strlen($password) < 10) {
+        return false;
+    }
+
+    return !in_array($password, [
+        'ChangeMe123!',
+        'tijdelijk-sterk-wachtwoord',
+        'vervang-door-sterk-tijdelijk-wachtwoord',
+    ], true);
+}

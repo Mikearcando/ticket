@@ -23,6 +23,7 @@
     "imap-intake": "php imap_intake.php",
     "smtp-test": "php smtp_test.php",
     "seed-performance": "php scripts/seed-performance.php",
+    "prepare-production": "php scripts/prepare-production.php --yes",
     "serve": "php -S 127.0.0.1:8080 -t public"
   }
 }
